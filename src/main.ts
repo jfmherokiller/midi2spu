@@ -4,7 +4,7 @@
 import {Midi} from "./MidiType";
 var midiparse = require("../node_modules/midi-file-parser");
 import {getnotes,CreateDBLines,GetTempo,CreateFileString} from "./utilityfunctions";
-require("fs").readFile('/Users/jfmmeyers/Google Drive/Public/midi/maple-leaf-rag.mid', 'binary', parsethefile);
+require("fs").readFile('C:/Users/peter/Google Drive/Public/midi/30064_Always-With-Me.mid', 'binary', parsethefile);
 function parsethefile(err: NodeJS.ErrnoException, midi:string)
 {
     let midicontent:Midi = midiparse(midi) as Midi;
