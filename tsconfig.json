@@ -1,10 +1,19 @@
 {
   "compilerOptions": {
-    "module": "commonjs",
-    "target": "es5",
-    "sourceMap": true
+    "noEmitOnError": true,
+    "noImplicitAny": false,
+    "removeComments": false,
+    "sourceMap": true,
+    "target": "es5"
   },
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "wwwroot"
+  ],
+  "files": [
+    "src/app.ts",
+    "src/MidiType.ts",
+    "src/processing.ts",
+    "src/utilityfunctions.ts"
   ]
 }

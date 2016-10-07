@@ -4,39 +4,39 @@ import {Midi} from "./MidiType";
  */
 
 
-function GetTempo(midi:Midi) {
+function getTempo(midi:Midi) {
     let tempo = midi.tracks[0].filter(x=> x.microsecondsPerBeat != null)[0].microsecondsPerBeat;
     tempo = 60000000 / tempo;
     tempo = Math.round(tempo);
     return tempo * 10;
 }
 
-function getnotes(midi) {
+function getnotes(midi:Midi) {
     let notes:Number[][] = [];
     for (let i = 0; i < midi.tracks.length; i++) {
         notes[i] = [];
         for (let midievent of midi.tracks[i]) {
-            if (midievent.channel != 10) {
+            if (midievent.channel !== 10) {
 
-                if (midievent.subtype == "noteOn") {
-                    notes[i].push(midievent.noteNumber)
+                if (midievent.subtype === "noteOn") {
+                    notes[i].push(midievent.noteNumber);
                 }
-                if (midievent.subtype == "noteOff") {
-                    notes[i].push(-1)
+                if (midievent.subtype === "noteOff") {
+                    notes[i].push(-1);
                 }
             }
 
         }
     }
     for (let k = 0; k < notes.length; k++) {
-        if (notes[k].length == 0) {
+        if (notes[k].length === 0) {
             notes.splice(k, 1);
         }
     }
     return notes;
 }
 
-function CreateWaveChannelBlocks(needed:number) {
+function createWaveChannelBlocks(needed:number) {
     let baseblock:string[] = [];
     baseblock.push("// Set track wave to channel 0 and start\n");
     baseblock.push("wset 0,trackwave;\n");
@@ -51,7 +51,7 @@ function CreateWaveChannelBlocks(needed:number) {
             baseblock.push("chwave " + i + "," + i + ";\n");
             baseblock.push("chvolume " + i + ",2.5;\n");
             baseblock.push("chstart " + i + ";\n");
-            baseblock.push("\n")
+            baseblock.push("\n");
         }
     }
     return baseblock;
@@ -61,7 +61,7 @@ function CreateDBLines(notes:Number[][]) {
     let dblines:string[][] = [];
     for (let notetracknum = 0; notetracknum < notes.length; notetracknum++) {
         dblines[notetracknum] = [];
-        dblines[notetracknum].push("track" + notetracknum + ":\n");
+        dblines[notetracknum].push(`track${notetracknum}:\n`);
         while (notes[notetracknum].length) {
             dblines[notetracknum].push("db ".concat(notes[notetracknum].splice(0, 32).join(', ')).concat(";\n"));
         }
@@ -129,13 +129,13 @@ function ConstructBodyOfFile(NumberOfTracks:number, longesttrack:number, tempo:n
     file.push("\n");
     return file;
 }
-function CreateFileString(dblinesin:string[][], tempo:number) {
+function createFileString(dblinesin:string[][], tempo:number) {
     let longestTrack = dblinesin.map(function (a) {
         return a.length;
     }).indexOf(Math.max.apply(Math, dblinesin.map(function (a) {
         return a.length;
     })));
-    let file = CreateWaveChannelBlocks(dblinesin.length);
+    let file = createWaveChannelBlocks(dblinesin.length);
     file = file.concat(ConstructBodyOfFile(dblinesin.length, longestTrack, tempo));
     //file.concat(require("fs").readFileSync("header.txt", 'utf8'));
     for (let dbline of dblinesin) {
@@ -145,4 +145,4 @@ function CreateFileString(dblinesin:string[][], tempo:number) {
 
     return file;
 }
-export {getnotes, CreateDBLines, GetTempo, CreateFileString}
+export {getnotes, CreateDBLines, getTempo as GetTempo, createFileString as CreateFileString}

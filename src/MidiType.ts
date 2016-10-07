@@ -1,19 +1,19 @@
-interface Midi {
-    header?: Midiheader;
-    tracks?: track[][];
+interface IMidi {
+    header?: IMidiheader;
+    tracks?: ITrack[][];
 }
-interface Midiheader {
+interface IMidiheader {
     formatType?:number,
     ticksPerBeat?: number,
-    trackCount?: number
+    trackCount?: number,
 }
-interface track {
+interface ITrack {
     deltaTime:number,
     type:string,
     subtype:string,
 
-    key?:number
-    scale?:number
+    key?:number,
+    scale?:number,
 
     text?:string,
     channel?:number,
@@ -33,23 +33,5 @@ interface track {
     velocity?:number,
 
 }
-interface timesignature extends meta
-{
 
-}
-interface meta extends track{
-
-}
-interface channel {
-
-}
-interface keySignature extends meta
-{
-
-}
-interface setTempo extends meta
-{
-
-}
-
-export {Midi};
+export {IMidi as Midi};
