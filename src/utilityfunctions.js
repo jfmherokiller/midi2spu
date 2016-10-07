@@ -2,38 +2,38 @@
 /**
  * Created by jfmmeyers on 9/14/16.
  */
-function GetTempo(midi) {
+function getTempo(midi) {
     var tempo = midi.tracks[0].filter(function (x) { return x.microsecondsPerBeat != null; })[0].microsecondsPerBeat;
     tempo = 60000000 / tempo;
     tempo = Math.round(tempo);
     return tempo * 10;
 }
-exports.GetTempo = GetTempo;
+exports.GetTempo = getTempo;
 function getnotes(midi) {
     var notes = [];
     for (var i = 0; i < midi.tracks.length; i++) {
         notes[i] = [];
         for (var _i = 0, _a = midi.tracks[i]; _i < _a.length; _i++) {
             var midievent = _a[_i];
-            if (midievent.channel != 10) {
-                if (midievent.subtype == "noteOn") {
+            if (midievent.channel !== 10) {
+                if (midievent.subtype === "noteOn") {
                     notes[i].push(midievent.noteNumber);
                 }
-                if (midievent.subtype == "noteOff") {
+                if (midievent.subtype === "noteOff") {
                     notes[i].push(-1);
                 }
             }
         }
     }
     for (var k = 0; k < notes.length; k++) {
-        if (notes[k].length == 0) {
+        if (notes[k].length === 0) {
             notes.splice(k, 1);
         }
     }
     return notes;
 }
 exports.getnotes = getnotes;
-function CreateWaveChannelBlocks(needed) {
+function createWaveChannelBlocks(needed) {
     var baseblock = [];
     baseblock.push("// Set track wave to channel 0 and start\n");
     baseblock.push("wset 0,trackwave;\n");
@@ -126,13 +126,13 @@ function ConstructBodyOfFile(NumberOfTracks, longesttrack, tempo) {
     file.push("\n");
     return file;
 }
-function CreateFileString(dblinesin, tempo) {
+function createFileString(dblinesin, tempo) {
     var longestTrack = dblinesin.map(function (a) {
         return a.length;
     }).indexOf(Math.max.apply(Math, dblinesin.map(function (a) {
         return a.length;
     })));
-    var file = CreateWaveChannelBlocks(dblinesin.length);
+    var file = createWaveChannelBlocks(dblinesin.length);
     file = file.concat(ConstructBodyOfFile(dblinesin.length, longestTrack, tempo));
     //file.concat(require("fs").readFileSync("header.txt", 'utf8'));
     for (var _i = 0, dblinesin_1 = dblinesin; _i < dblinesin_1.length; _i++) {
@@ -142,5 +142,5 @@ function CreateFileString(dblinesin, tempo) {
     }
     return file;
 }
-exports.CreateFileString = CreateFileString;
+exports.CreateFileString = createFileString;
 //# sourceMappingURL=utilityfunctions.js.map

@@ -1,11 +1,26 @@
 {
-  "main": "src/main.js",
-  "name": "midi2spu",
-  "version": "0.0.1",
+  "author": "Noah The Goodra",
   "dependencies": {
+    "downloadjs": "^1.4.6",
     "midi-file-parser": "^1.0.0"
   },
   "devDependencies": {
-    "typings": "^1.3.3"
+    "browserify": "^13.1.0",
+    "gulp": "^3.9.1",
+    "gulp-sourcemaps": "^1.6.0",
+    "gulp-typescript": "^3.0.2",
+    "gulp-uglify": "^2.0.0",
+    "gulp-util": "^3.0.7",
+    "typescript": "^2.0.3",
+    "typings": "^1.3.3",
+    "vinyl-buffer": "^1.0.0",
+    "vinyl-source-stream": "^1.1.0"
+  },
+  "name": "midi2spu",
+  "private": true,
+  "version": "1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jfmherokiller/midi2spu"
   }
 }
