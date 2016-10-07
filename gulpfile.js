@@ -12,7 +12,6 @@ var gutil = require('gulp-util');
 var source = require('vinyl-source-stream');
 var buffer = require('vinyl-buffer');
 var sourcemaps = require('gulp-sourcemaps');
-var del = require('del');
 gulp.task('default', function () {
     // set up the browserify instance on a task basis
     var b = browserify({

@@ -21,6 +21,11 @@
   "version": "1.0.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/jfmherokiller/midi2spu"
+    "url": "https://github.com/jfmherokiller/midi2spu.git"
+  },
+  "main": "index.html",
+  "scripts": {
+    "install": "typings install",
+    "prepublish": "tsc && gulp "
   }
 }
