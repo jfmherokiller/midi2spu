@@ -1,13 +1,16 @@
-﻿window.onload = () => {
+﻿
+import {parsethefile} from "./processing"
+window.onload = () => {
     document.getElementById("file").addEventListener("change", readFile, false);
 
     function readFile(evt) {
-        var files = evt.target.files;
-        var file = files[0];
-        var reader = new FileReader();
-        reader.onload = function () {
-            console.log(this.result);
-        }
-        reader.readAsText(file);
+        let files = evt.target.files;
+        let file = files[0];
+        let reader = new FileReader();
+        let preview = new FileReader();
+        reader.addEventListener("load", function () {
+            parsethefile(reader.result);
+        });
+        reader.readAsBinaryString(file);
     }
 };

@@ -10,4 +10,5 @@ function parsethefile(midi) {
     download(file.join(""), "songtest.txt", "text/plain");
     console.log("AAAAAAA");
 }
+exports.parsethefile = parsethefile;
 //# sourceMappingURL=processing.js.map

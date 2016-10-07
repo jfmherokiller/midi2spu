@@ -12,3 +12,4 @@ function parsethefile(midi: string) {
     download(file.join(""), "songtest.txt", "text/plain");
     console.log("AAAAAAA");
 }
+export {parsethefile}
