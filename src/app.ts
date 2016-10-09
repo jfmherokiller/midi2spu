@@ -7,8 +7,7 @@ window.onload = () => {
         let files = evt.target.files;
         let file = files[0];
         let reader = new FileReader();
-        let preview = new FileReader();
-        reader.addEventListener("load", function () {
+        reader.addEventListener("load", () => {
             parsethefile(reader.result);
         });
         reader.readAsBinaryString(file);

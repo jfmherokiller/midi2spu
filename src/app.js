@@ -6,7 +6,6 @@ window.onload = function () {
         var files = evt.target.files;
         var file = files[0];
         var reader = new FileReader();
-        var preview = new FileReader();
         reader.addEventListener("load", function () {
             processing_1.parsethefile(reader.result);
         });
