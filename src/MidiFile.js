@@ -1,9 +1,4 @@
 "use strict";
-var __extends = (this && this.__extends) || function (d, b) {
-    for (var p in b) if (b.hasOwnProperty(p)) d[p] = b[p];
-    function __() { this.constructor = d; }
-    d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
-};
 var MidiHeader = (function () {
     function MidiHeader(formatype, trackCount, ticksPerBeat) {
         this.formatType = formatype;
@@ -20,25 +15,6 @@ var Chunk = (function () {
     }
     return Chunk;
 }());
-var Event = (function () {
-    function Event() {
-    }
-    return Event;
-}());
-var MetaEvent = (function (_super) {
-    __extends(MetaEvent, _super);
-    function MetaEvent() {
-        _super.apply(this, arguments);
-    }
-    return MetaEvent;
-}(Event));
-var ChannelEvent = (function (_super) {
-    __extends(ChannelEvent, _super);
-    function ChannelEvent() {
-        _super.apply(this, arguments);
-    }
-    return ChannelEvent;
-}(Event));
 var Midifile = (function () {
     function Midifile(data) {
         this.tracks = new Array();
