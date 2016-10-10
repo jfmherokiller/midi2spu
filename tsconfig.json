@@ -12,8 +12,8 @@
   ],
   "files": [
     "src/app.ts",
-    "src/MidiType.ts",
     "src/processing.ts",
-    "src/utilityfunctions.ts"
+    "src/utilityfunctions.ts",
+    "src/MidiFile.ts"
   ]
 }

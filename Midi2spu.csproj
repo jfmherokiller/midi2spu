@@ -29,7 +29,7 @@
   </ItemGroup>
   <ItemGroup>
     <TypeScriptCompile Include="src\app.ts" />
-    <TypeScriptCompile Include="src\MidiType.ts" />
+    <TypeScriptCompile Include="src\MidiFile.ts" />
     <TypeScriptCompile Include="src\processing.ts" />
     <TypeScriptCompile Include="src\utilityfunctions.ts" />
   </ItemGroup>

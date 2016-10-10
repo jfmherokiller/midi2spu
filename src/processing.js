@@ -1,8 +1,9 @@
 "use strict";
-var midiparse = require("midi-file-parser");
+///<reference path="../typings/globals/node/index.d.ts" />
+var MidiFile_1 = require("./MidiFile");
 var utilityfunctions_1 = require("./utilityfunctions");
 function parsethefile(midi) {
-    var midicontent = midiparse(midi);
+    var midicontent = new MidiFile_1.Midifile(midi);
     var tempo = utilityfunctions_1.GetTempo(midicontent);
     var dblines = utilityfunctions_1.CreateDBLines(utilityfunctions_1.getnotes(midicontent));
     var file = utilityfunctions_1.CreateFileString(dblines, tempo);

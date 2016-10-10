@@ -1,7 +1,7 @@
-"use strict";
 /**
  * Created by jfmmeyers on 9/14/16.
  */
+"use strict";
 function getTempo(midi) {
     var tempo = midi.tracks[0].filter(function (x) { return x.microsecondsPerBeat != null; })[0].microsecondsPerBeat;
     tempo = 60000000 / tempo;
@@ -53,7 +53,7 @@ function createWaveChannelBlocks(needed) {
     }
     return baseblock;
 }
-function CreateDBLines(notes) {
+function createDbLines(notes) {
     var dblines = [];
     for (var notetracknum = 0; notetracknum < notes.length; notetracknum++) {
         dblines[notetracknum] = [];
@@ -65,8 +65,8 @@ function CreateDBLines(notes) {
     }
     return dblines;
 }
-exports.CreateDBLines = CreateDBLines;
-function ConstructLoopBlocks(needed) {
+exports.CreateDBLines = createDbLines;
+function constructLoopBlocks(needed) {
     var noteblocks = [];
     noteblocks.push("    // Track 0\n");
     noteblocks.push("note = 2;\n");
@@ -86,7 +86,7 @@ function ConstructLoopBlocks(needed) {
     }
     return noteblocks;
 }
-function ConstructBodyOfFile(NumberOfTracks, longesttrack, tempo) {
+function constructBodyOfFile(numberOfTracks, longesttrack, tempo) {
     var file = [];
     file.push("// Get track length\n");
     file.push("tracklen = strlen(track" + longesttrack + ");\n");
@@ -95,7 +95,7 @@ function ConstructBodyOfFile(NumberOfTracks, longesttrack, tempo) {
     file.push("{\n");
     file.push("    tempo(" + tempo + ")\n");
     file.push("\n");
-    file = file.concat(ConstructLoopBlocks(NumberOfTracks));
+    file = file.concat(constructLoopBlocks(numberOfTracks));
     file.push("    // Index\n");
     file.push("i++; mod i,tracklen;\n");
     file.push("\n");
@@ -133,7 +133,7 @@ function createFileString(dblinesin, tempo) {
         return a.length;
     })));
     var file = createWaveChannelBlocks(dblinesin.length);
-    file = file.concat(ConstructBodyOfFile(dblinesin.length, longestTrack, tempo));
+    file = file.concat(constructBodyOfFile(dblinesin.length, longestTrack, tempo));
     //file.concat(require("fs").readFileSync("header.txt", 'utf8'));
     for (var _i = 0, dblinesin_1 = dblinesin; _i < dblinesin_1.length; _i++) {
         var dbline = dblinesin_1[_i];

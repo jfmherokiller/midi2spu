@@ -1,17 +1,17 @@
-import {Midi} from "./MidiType";
+
 /**
  * Created by jfmmeyers on 9/14/16.
  */
 
 
-function getTempo(midi:Midi) {
+function getTempo(midi) {
     let tempo = midi.tracks[0].filter(x=> x.microsecondsPerBeat != null)[0].microsecondsPerBeat;
     tempo = 60000000 / tempo;
     tempo = Math.round(tempo);
     return tempo * 10;
 }
 
-function getnotes(midi:Midi) {
+function getnotes(midi) {
     let notes:Number[][] = [];
     for (let i = 0; i < midi.tracks.length; i++) {
         notes[i] = [];
@@ -57,7 +57,7 @@ function createWaveChannelBlocks(needed:number) {
     return baseblock;
 }
 
-function CreateDBLines(notes:Number[][]) {
+function createDbLines(notes:Number[][]) {
     let dblines:string[][] = [];
     for (let notetracknum = 0; notetracknum < notes.length; notetracknum++) {
         dblines[notetracknum] = [];
@@ -69,7 +69,7 @@ function CreateDBLines(notes:Number[][]) {
     }
     return dblines;
 }
-function ConstructLoopBlocks(needed:number) {
+function constructLoopBlocks(needed:number) {
     let noteblocks:string[] = [];
     noteblocks.push("    // Track 0\n");
     noteblocks.push("note = 2;\n");
@@ -89,7 +89,7 @@ function ConstructLoopBlocks(needed:number) {
     }
     return noteblocks;
 }
-function ConstructBodyOfFile(NumberOfTracks:number, longesttrack:number, tempo:number) {
+function constructBodyOfFile(numberOfTracks:number, longesttrack:number, tempo:number) {
     let file:string[] = [];
     file.push("// Get track length\n");
     file.push("tracklen = strlen(track" + longesttrack + ");\n");
@@ -98,7 +98,7 @@ function ConstructBodyOfFile(NumberOfTracks:number, longesttrack:number, tempo:n
     file.push("{\n");
     file.push("    tempo(" + tempo + ")\n");
     file.push("\n");
-    file = file.concat(ConstructLoopBlocks(NumberOfTracks));
+    file = file.concat(constructLoopBlocks(numberOfTracks));
     file.push("    // Index\n");
     file.push("i++; mod i,tracklen;\n");
     file.push("\n");
@@ -136,7 +136,7 @@ function createFileString(dblinesin:string[][], tempo:number) {
         return a.length;
     })));
     let file = createWaveChannelBlocks(dblinesin.length);
-    file = file.concat(ConstructBodyOfFile(dblinesin.length, longestTrack, tempo));
+    file = file.concat(constructBodyOfFile(dblinesin.length, longestTrack, tempo));
     //file.concat(require("fs").readFileSync("header.txt", 'utf8'));
     for (let dbline of dblinesin) {
         file = file.concat(dbline);
@@ -145,4 +145,4 @@ function createFileString(dblinesin:string[][], tempo:number) {
 
     return file;
 }
-export {getnotes, CreateDBLines, getTempo as GetTempo, createFileString as CreateFileString}
+export {getnotes, createDbLines as CreateDBLines, getTempo as GetTempo, createFileString as CreateFileString}
