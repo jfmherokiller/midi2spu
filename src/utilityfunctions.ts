@@ -25,7 +25,6 @@ function getnotes(midi) {
                     notes[i].push(-1);
                 }
             }
-
         }
     }
     for (let k = 0; k < notes.length; k++) {
