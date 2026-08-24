@@ -54,7 +54,7 @@ export function generateScript(song: Song): string {
     if (audible.tracks.length === 0) {
         return "// No audible tracks - unmute or un-solo at least one track before exporting.\n";
     }
-    let dblines: string[][] = CreateDBLines(audible.tracks);
-    let file = CreateFileString(dblines, audible.tempo, audible.waveforms, audible.volumes);
+    let {dblines, usesPattern} = CreateDBLines(audible.tracks);
+    let file = CreateFileString(dblines, usesPattern, audible.tempo, audible.waveforms, audible.volumes);
     return file.join("");
 }
