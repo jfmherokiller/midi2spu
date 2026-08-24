@@ -81,12 +81,28 @@ function createWaveChannelBlocks(volumes:number[]) {
 }
 
 function createDbLines(notes:number[][]) {
+    /* The generated main() loop shares one index `i` across every track, counting up to
+       tracklen = strlen(the longest track) - see constructBodyOfFile. A track's own `db 0;`
+       terminator only marks where strlen() should stop counting; it does NOT stop the shared
+       loop from reading trackN[i] past that point. Without padding, a track shorter than
+       tracklen reads straight through into whatever memory comes after its own declared data -
+       the next track's real note values, misread as this track's continuing melody. Padding every
+       track to the same length with -1 (silence) makes every trackN[i] for i < tracklen valid. */
+    let maxLength = Math.max(0, ...notes.map(track => track.length));
+    let paddedNotes = notes.map(track => {
+        let padded = track.slice();
+        while (padded.length < maxLength) {
+            padded.push(-1);
+        }
+        return padded;
+    });
+
     let dblines:string[][] = [];
-    for (let notetracknum = 0; notetracknum < notes.length; notetracknum++) {
+    for (let notetracknum = 0; notetracknum < paddedNotes.length; notetracknum++) {
         dblines[notetracknum] = [];
         dblines[notetracknum].push(`track${notetracknum}:\n`);
-        while (notes[notetracknum].length) {
-            dblines[notetracknum].push("db ".concat(notes[notetracknum].splice(0, 32).join(', ')).concat(";\n"));
+        while (paddedNotes[notetracknum].length) {
+            dblines[notetracknum].push("db ".concat(paddedNotes[notetracknum].splice(0, 32).join(', ')).concat(";\n"));
         }
         dblines[notetracknum].push("db 0; // End string\n");
     }
