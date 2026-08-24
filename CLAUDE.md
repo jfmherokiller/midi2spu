@@ -61,7 +61,7 @@ Source lives in `src/`, six files:
   Blob + `URL.createObjectURL` + `<a download>` helper. The project has no runtime dependencies.
 - **`player.ts`** — `ZspuPlayer`, a Web Audio playback engine for the "Play preview" button.
   Deliberately mimics the real ZSPU rather than doing generic MIDI/soundfont playback (see
-  `docs/HLZASM.md`'s "SPU audio model" section for why): one plain sine `OscillatorNode` per
+  `zcpu-notes/docs/HLZASM.md`'s "SPU audio model" section for why): one plain sine `OscillatorNode` per
   track/channel, frequency = `880 * 2^(note/12)` matching the generator's `CHPITCH` ratio and its
   `synth/sine_880.wav` base sample, hard on/off steps (no ADSR, matching the generator never
   calling `CHADSR`). Plays the *converted/quantized* note arrays (`getnotes()`'s output — literally
@@ -82,10 +82,12 @@ Source lives in `src/`, six files:
 When changing the generated ZSPU script format, `constructBodyOfFile` and `constructLoopBlocks` in
 `utilityfunctions.ts` are the two functions that hand-emit the ZSPU source text — the ZSPU
 language itself (`fpwr`, `chpitch`, `wset`, `chwave`, `chvolume`, `chstart`, `timer`, etc.) is not
-implemented here, only text-generated as a target format for the Lua entity linked above. See
-**[`docs/HLZASM.md`](docs/HLZASM.md)** for the full language/instruction-set reference (it's
-called HLZASM, not "ZSPU bytecode" — that doc has the full opcode tables and syntax rules, sourced
-directly from the Wiremod `wire` addon's compiler and VM source).
+implemented here, only text-generated as a target format for the Lua entity linked above. The full
+language/instruction-set reference (it's called HLZASM, not "ZSPU bytecode") lives in a separate
+sibling repo, **`E:\projects\zcpu-notes\docs\HLZASM.md`** — pulled out of this repo since the
+language is general-purpose across Wiremod's whole PU chip family, not specific to MIDI
+conversion, and is being kept as its own growing reference (that repo also has a `wire` git
+submodule with the actual Wiremod source it was sourced from).
 
 In-browser playback (`player.ts`, above) replaces the original `index.html`'s dead external
 `midi.js` `<script>` tag (removed during the earlier modernization pass — almost certainly the
