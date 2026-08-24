@@ -78,29 +78,61 @@ Source lives in `src/`:
     `player.ts`'s oscillator-type mapping, and `pianoRoll.ts`'s waveform dropdown.
   - `CreateDBLines` pads every track to the same total duration (with `-1`, so the whole ensemble
     loops together in sync rather than each track wrapping back to its own start at a different
-    real time), then **run-length-encodes** each padded track into flat `[note,count, note,count,
-    ...]` pairs before chunking into ZSPU `db ...;` data-statement lines (32 values/line). Real
-    measured win: most held notes span many consecutive steps at `STEPS_PER_BEAT` quantization, so
-    this compresses 7-9x on real songs (`Bad Apple.mid`: 64,376 raw cells → 7,018; `Bolero-Ravel.mid`:
-    265,330 → 35,222) — the SPU's default memory model is 128K cells, so a large multi-track song
-    can genuinely fail to fit (plausibly manifesting as the chip not starting at all) without this.
-    `CreateDBLines` doesn't mutate the array passed in.
-  - `CreateFileString(dblinesin, tempo, waveforms, volumes)` assembles the full ZSPU script:
-    per-channel `wset`/`chwave`/`chvolume`/`chstart` setup blocks (one **named wave string var per
-    track**, e.g. `wave0`/`wave1`/..., each bound to that track's chosen waveform — not a single
-    shared `trackwave` for every channel, which is what this project did before; matches the real
-    hand-written `mario_theme.txt` example's pattern of separate named wave vars per track — see
-    `zcpu-notes/docs/EXAMPLES.md`), then `main()`. **Each track decodes its own RLE pairs
-    independently** — no shared index across tracks (an earlier version had one shared `i` counting
-    up to `tracklen = strlen(the longest track)`; a track shorter than that read straight through
-    into the next track's real data once `i` exceeded its own length, misread as its own continuing
-    melody — reported as a constant/stuck-sounding "solid tone" on `Bolero-Ravel.mid`, fixed in the
-    same session RLE was added, superseded by this design since RLE decoding needs per-track state
-    anyway). Per track `N`: `if (remainN <= 0) { noteN = trackN[idxN]; remainN = trackN[idxN+1];
-    idxN += 2; if (idxN >= tracklenN) idxN = 0; } remainN -= 1;` then the existing
-    `fpwr`/`chpitch` pitch application, unchanged. `tracklenN = strlen(trackN)` computed once per
-    track before `main()` (one per track now, not a single shared `tracklen`). Also emits a
-    `tempo()` busy-wait helper and a `strlen()` helper (ZSPU has no native one).
+    real time), then encodes each padded track via `encodeRuns` before chunking into ZSPU
+    `db ...;` data-statement lines (32 values/line). Returns `{dblines, usesPattern}` -
+    `usesPattern[i]` says whether track `i`'s encoding contains a periodic-pattern block (see
+    below), which `CreateFileString`/`constructLoopBlocks` need to know which decode code to emit
+    for that track. `CreateDBLines` doesn't mutate the array passed in.
+  - `encodeRuns(track)` picks between two encodings of one track's per-step notes, whichever
+    produces smaller *exported text* for that track:
+    - **Plain run-length**: flat `[note,count, note,count, ...]` pairs. Real measured win: most
+      held notes span many consecutive steps at `STEPS_PER_BEAT` quantization, so this compresses
+      7-9x on real songs (`Bad Apple.mid`: 64,376 raw cells → 7,018; `Bolero-Ravel.mid`: 265,330 →
+      35,222) — the SPU's default memory model is 128K cells, so a large multi-track song can
+      genuinely fail to fit (plausibly manifesting as the chip not starting at all) without this.
+    - **Periodic-pattern** (`encodePeriodicRuns`): plain RLE does nothing for a short repeating
+      sequence (e.g. a 4-step arpeggio `2, -1, 3, 33, 2, -1, 3, 33, ...`) - no single value
+      repeats, so every step becomes its own `[note,1]` pair, roughly *doubling* size instead of
+      shrinking it. This greedily also tries periods 2..`MAX_PATTERN_PERIOD` (32) at each
+      position and, if a period repeats at least twice, can instead emit a single
+      `[PATTERN_MARK(-2), periodLength, ...periodValues, repeatCount]` block. Found via a real
+      file (`Intensive Care Unit TheVocoderGuy.mid`) with exactly this kind of oscillating
+      sequence in its data.
+    - The catch: using *any* pattern block on a track costs that track a fixed amount of extra
+      decode-loop code (`PATTERN_CODE_OVERHEAD_CHARS`, measured ~463 chars — the `PATTERN_MARK`
+      branch plus 3 extra per-track variables). A track with only a small periodic win doesn't
+      earn that back — confirmed empirically: an earlier version that chose periodic encoding
+      whenever it had *fewer tokens* (ignoring this fixed cost) made some real files' *total
+      generated output bigger* despite the RLE token count going down, because tracks with a
+      trivial periodic saving still paid the full code cost. `encodeRuns` now estimates real
+      exported-text size for both encodings (`estimateDbTextLength`, mirrors `CreateDBLines`'
+      actual `db` chunking) including that fixed cost, and only picks periodic if it's genuinely
+      smaller *for that track*. With this fix, periodic encoding measured strictly
+      better-or-equal to plain RLE on every real test file (never a regression), 1.7-3.1% smaller
+      total output on files with real repeating sequences (`Intensive Care Unit
+      TheVocoderGuy.mid`, `Bolero-Ravel.mid`) and identical to plain RLE otherwise.
+  - `CreateFileString(dblinesin, usesPattern, tempo, waveforms, volumes)` assembles the full ZSPU
+    script: per-channel `wset`/`chwave`/`chvolume`/`chstart` setup blocks (one **named wave string
+    var per track**, e.g. `wave0`/`wave1`/..., each bound to that track's chosen waveform — not a
+    single shared `trackwave` for every channel, which is what this project did before; matches
+    the real hand-written `mario_theme.txt` example's pattern of separate named wave vars per
+    track — see `zcpu-notes/docs/EXAMPLES.md`), then `main()`. **Each track decodes its own
+    encoding independently** — no shared index across tracks (an earlier version had one shared
+    `i` counting up to `tracklen = strlen(the longest track)`; a track shorter than that read
+    straight through into the next track's real data once `i` exceeded its own length, misread as
+    its own continuing melody — reported as a constant/stuck-sounding "solid tone" on
+    `Bolero-Ravel.mid`, fixed the same session RLE was added, superseded by this design since RLE
+    decoding needs per-track state anyway). For a track with `usesPattern[i]` false, per track
+    `N`: `if (remainN <= 0) { noteN = trackN[idxN]; remainN = trackN[idxN+1]; idxN += 2;
+    if (idxN >= tracklenN) idxN = 0; } remainN -= 1;` (unchanged from the plain-RLE-only design).
+    For `usesPattern[i]` true, the header-read branches on `trackN[idxN] == PATTERN_MARK` to set
+    up `patternlenN`/`patternstartN` (1/`idxN` for a plain run, the real period length/start for a
+    pattern block) before a shared tail common to both: `noteN = trackN[patternstartN+
+    patternposN]; patternposN += 1; if (patternposN >= patternlenN) patternposN = 0;
+    remainN -= 1;` — then the existing `fpwr`/`chpitch` pitch application, unchanged either way.
+    `tracklenN = strlen(trackN)` computed once per track before `main()` (one per track, not a
+    single shared `tracklen`). Also emits a `tempo()` busy-wait helper and a `strlen()` helper
+    (ZSPU has no native one).
 - **`processing.ts`** — the editable song model:
   - `Song` — `{tracks: number[][], tempo: number, waveforms: WaveformId[], volumes: number[],
     muted: boolean[], solo: boolean[], isPercussion: boolean[]}`, all per-track arrays parallel to
