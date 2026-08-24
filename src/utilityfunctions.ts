@@ -3,33 +3,55 @@
  * Created by jfmmeyers on 9/14/16.
  */
 
+import {Midifile} from "./MidiFile";
 
-function getTempo(midi) {
-    let tempo = midi.tracks[0].filter(x=> x.microsecondsPerBeat != null)[0].microsecondsPerBeat;
-    tempo = 60000000 / tempo;
+/* The generated ZSPU main() loop advances one `db` array entry per tempo()
+   tick, and GetTempo multiplies BPM by this factor - so each entry
+   represents 1/STEPS_PER_BEAT of a beat. getnotes() below must quantize
+   note durations to this same resolution or the two drift apart. */
+const STEPS_PER_BEAT = 10;
+
+/* MIDI default tempo (spec fallback when no setTempo meta event is present) */
+const DEFAULT_MICROSECONDS_PER_BEAT = 500000;
+
+/* General MIDI's percussion channel is channel 10 in 1-indexed MIDI terms,
+   which is index 9 here since event.channel is 0-indexed (eventTypeByte & 0x0f). */
+const PERCUSSION_CHANNEL = 9;
+
+function getTempo(midi: Midifile) {
+    let tempoEvent = midi.tracks[0].filter(x => x.microsecondsPerBeat != null)[0];
+    let microsecondsPerBeat = tempoEvent?.microsecondsPerBeat ?? DEFAULT_MICROSECONDS_PER_BEAT;
+    let tempo = 60000000 / microsecondsPerBeat;
     tempo = Math.round(tempo);
-    return tempo * 10;
+    return tempo * STEPS_PER_BEAT;
 }
 
-function getnotes(midi) {
-    let notes:Number[][] = [];
+function getnotes(midi: Midifile) {
+    let notes: number[][] = [];
     for (let i = 0; i < midi.tracks.length; i++) {
-        notes[i] = [];
+        let track: number[] = [];
+        let currentNote = -1;
+        let fractionalSteps = 0;
         for (let midievent of midi.tracks[i]) {
-            if (midievent.channel !== 10) {
-
-                if (midievent.subtype === "noteOn") {
-                    notes[i].push(midievent.noteNumber);
-                }
-                if (midievent.subtype === "noteOff") {
-                    notes[i].push(-1);
+            if (midievent.deltaTime > 0) {
+                fractionalSteps += (midievent.deltaTime / midi.header.ticksPerBeat) * STEPS_PER_BEAT;
+                let steps = Math.floor(fractionalSteps);
+                fractionalSteps -= steps;
+                for (let s = 0; s < steps; s++) {
+                    track.push(currentNote);
                 }
             }
+            if (midievent.channel === PERCUSSION_CHANNEL) {
+                continue;
+            }
+            if (midievent.subtype === "noteOn") {
+                currentNote = midievent.noteNumber ?? -1;
+            } else if (midievent.subtype === "noteOff") {
+                currentNote = -1;
+            }
         }
-    }
-    for (let k = 0; k < notes.length; k++) {
-        if (notes[k].length === 0) {
-            notes.splice(k, 1);
+        if (track.length > 0) {
+            notes.push(track);
         }
     }
     return notes;
@@ -56,7 +78,7 @@ function createWaveChannelBlocks(needed:number) {
     return baseblock;
 }
 
-function createDbLines(notes:Number[][]) {
+function createDbLines(notes:number[][]) {
     let dblines:string[][] = [];
     for (let notetracknum = 0; notetracknum < notes.length; notetracknum++) {
         dblines[notetracknum] = [];
