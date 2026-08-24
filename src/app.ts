@@ -1,5 +1,5 @@
 import "xp.css/dist/XP.css"
-import {loadMidi, generateScript, Song} from "./processing"
+import {loadMidi, generateScript, getAudibleSong, Song} from "./processing"
 import {downloadTextFile} from "./download"
 import {ZspuPlayer} from "./player"
 import {PianoRoll} from "./pianoRoll"
@@ -18,14 +18,31 @@ window.onload = () => {
 
     let song: Song | null = null;
     let player: ZspuPlayer | null = null;
+    let pianoRoll: PianoRoll | null = null;
+    let followFrame: number | null = null;
 
     function setPlaying(playing: boolean) {
         playButton.disabled = playing;
         stopButton.disabled = !playing;
     }
 
+    function followPlayhead() {
+        if (!player) return;
+        pianoRoll?.setPlayheadStep(player.getCurrentStep());
+        followFrame = requestAnimationFrame(followPlayhead);
+    }
+
+    function stopFollowingPlayhead() {
+        if (followFrame !== null) {
+            cancelAnimationFrame(followFrame);
+            followFrame = null;
+        }
+        pianoRoll?.setPlayheadStep(null);
+    }
+
     function stopPlayback() {
         player?.stop();
+        stopFollowingPlayhead();
         setPlaying(false);
     }
 
@@ -37,7 +54,7 @@ window.onload = () => {
 
         controls.style.display = "";
         pianoRollWindow.style.display = "";
-        const pianoRoll = new PianoRoll(song, pianoRollContainer);
+        pianoRoll = new PianoRoll(song, pianoRollContainer);
         pianoRoll.onChange = stopPlayback;
     }
 
@@ -66,12 +83,18 @@ window.onload = () => {
 
     playButton.addEventListener("click", () => {
         if (!song) return;
+        const audible = getAudibleSong(song);
+        if (audible.tracks.length === 0) return;
         player?.stop();
-        player = new ZspuPlayer(song.tracks, song.tempo, song.waveforms, song.volumes);
+        player = new ZspuPlayer(audible.tracks, audible.tempo, audible.waveforms, audible.volumes);
         player.setVolume(volumeSlider.valueAsNumber);
-        player.onEnded = () => setPlaying(false);
+        player.onEnded = () => {
+            stopFollowingPlayhead();
+            setPlaying(false);
+        };
         setPlaying(true);
         player.play();
+        followPlayhead();
     });
 
     stopButton.addEventListener("click", stopPlayback);

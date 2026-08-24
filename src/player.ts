@@ -33,6 +33,8 @@ class ZspuPlayer {
     private volume = 0.5;
     private oscillators: OscillatorNode[] = [];
     private endTimeout: number | null = null;
+    private playStartTime: number | null = null;
+    private secondsPerStep = 0;
     onEnded?: () => void;
 
     constructor(tracks: number[][], tempo: number, waveforms: WaveformId[], volumes: number[]) {
@@ -69,6 +71,8 @@ class ZspuPlayer {
         const secondsPerStep = 60 / this.tempo;
         const startTime = audioContext.currentTime + 0.05;
         const duration = Math.max(...this.tracks.map(track => track.length)) * secondsPerStep;
+        this.playStartTime = startTime;
+        this.secondsPerStep = secondsPerStep;
 
         for (let trackIndex = 0; trackIndex < this.tracks.length; trackIndex++) {
             const track = this.tracks[trackIndex];
@@ -114,6 +118,16 @@ class ZspuPlayer {
             oscillator.disconnect();
         }
         this.oscillators = [];
+        this.playStartTime = null;
+    }
+
+    /* Current playback position in grid steps, or null if not currently playing. Used to drive
+       the piano roll's playhead/follow-scroll. */
+    getCurrentStep(): number | null {
+        if (this.playStartTime === null || !this.audioContext) return null;
+        const elapsed = this.audioContext.currentTime - this.playStartTime;
+        if (elapsed < 0) return 0;
+        return Math.floor(elapsed / this.secondsPerStep);
     }
 }
 

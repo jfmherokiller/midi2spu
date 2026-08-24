@@ -1,12 +1,23 @@
-import {Song} from "./processing";
+import {Song, isTrackAudible} from "./processing";
 import {WaveformId} from "./utilityfunctions";
 
 const STEP_WIDTH = 20;
 const ROW_HEIGHT = 16;
+const PIANO_KEYS_WIDTH = 40; // keep in sync with app.css's .piano-ruler margin-left
 const PITCH_PADDING = 3;
 const MIN_VISIBLE_SEMITONES = 12;
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const WAVEFORM_OPTIONS: WaveformId[] = ["sine", "square", "saw", "tri"];
+
+// Cycled by track index so every track visible in the overlay gets a distinct color.
+const TRACK_COLORS = [
+    "#316AC5", "#2e8b57", "#d2691e", "#8a2be2",
+    "#c0392b", "#008080", "#808000", "#c71585",
+];
+
+function trackColor(trackIndex: number): string {
+    return TRACK_COLORS[trackIndex % TRACK_COLORS.length];
+}
 
 function noteName(note: number): string {
     const name = NOTE_NAMES[((note % 12) + 12) % 12];
@@ -19,6 +30,8 @@ class PianoRoll {
     private container: HTMLElement;
     private activeTrack = 0;
     private noteBlocksLayer: HTMLElement | null = null;
+    private playheadEl: HTMLElement | null = null;
+    private scrollAreaEl: HTMLElement | null = null;
     private minPitch = 60;
     private maxPitch = 60;
     private dragValue: number | null = null;
@@ -35,12 +48,23 @@ class PianoRoll {
         return Math.max(1, ...this.song.tracks.map(track => track.length));
     }
 
-    private computePitchRange(track: number[]): {min: number; max: number} {
+    /* Tracks shown in the grid overlay: every audible (unmuted, not soloed-out) track, plus the
+       active track regardless of its own mute state - you can always see/edit what you're
+       working on, even if you've muted it while deciding whether to keep it. */
+    private visibleTrackIndexes(): number[] {
+        return this.song.tracks
+            .map((_, i) => i)
+            .filter(i => i === this.activeTrack || isTrackAudible(this.song, i));
+    }
+
+    private computePitchRange(trackIndexes: number[]): {min: number; max: number} {
         let min = Infinity, max = -Infinity;
-        for (const note of track) {
-            if (note === -1) continue;
-            if (note < min) min = note;
-            if (note > max) max = note;
+        for (const trackIndex of trackIndexes) {
+            for (const note of this.song.tracks[trackIndex]) {
+                if (note === -1) continue;
+                if (note < min) min = note;
+                if (note > max) max = note;
+            }
         }
         if (min === Infinity) {
             min = 60;
@@ -57,8 +81,7 @@ class PianoRoll {
     }
 
     private render() {
-        const track = this.song.tracks[this.activeTrack] ?? [];
-        const range = this.computePitchRange(track);
+        const range = this.computePitchRange(this.visibleTrackIndexes());
         this.minPitch = range.min;
         this.maxPitch = range.max;
 
@@ -82,6 +105,47 @@ class PianoRoll {
             label.textContent = "Track " + trackIndex;
             label.className = "track-label";
             row.appendChild(label);
+
+            const muteLabel = document.createElement("label");
+            muteLabel.className = "toggle-badge mute-badge";
+            muteLabel.title = "Mute: exclude this track from playback and the exported script";
+            muteLabel.addEventListener("click", evt => evt.stopPropagation());
+            const muteCheckbox = document.createElement("input");
+            muteCheckbox.type = "checkbox";
+            muteCheckbox.checked = this.song.muted[trackIndex];
+            muteCheckbox.addEventListener("change", () => {
+                this.song.muted[trackIndex] = muteCheckbox.checked;
+                this.onChange?.();
+                this.render();
+            });
+            const muteText = document.createElement("span");
+            muteText.textContent = "M";
+            muteLabel.appendChild(muteCheckbox);
+            muteLabel.appendChild(muteText);
+            row.appendChild(muteLabel);
+
+            const soloLabel = document.createElement("label");
+            soloLabel.className = "toggle-badge solo-badge";
+            soloLabel.title = "Solo: when any track is soloed, only soloed tracks play/export";
+            soloLabel.addEventListener("click", evt => evt.stopPropagation());
+            const soloCheckbox = document.createElement("input");
+            soloCheckbox.type = "checkbox";
+            soloCheckbox.checked = this.song.solo[trackIndex];
+            soloCheckbox.addEventListener("change", () => {
+                this.song.solo[trackIndex] = soloCheckbox.checked;
+                this.onChange?.();
+                this.render();
+            });
+            const soloText = document.createElement("span");
+            soloText.textContent = "S";
+            soloLabel.appendChild(soloCheckbox);
+            soloLabel.appendChild(soloText);
+            row.appendChild(soloLabel);
+
+            const swatch = document.createElement("span");
+            swatch.className = "track-color-swatch";
+            swatch.style.background = trackColor(trackIndex);
+            row.appendChild(swatch);
 
             const waveformSelect = document.createElement("select");
             for (const waveform of WAVEFORM_OPTIONS) {
@@ -147,7 +211,7 @@ class PianoRoll {
 
         const keys = document.createElement("div");
         keys.className = "piano-keys";
-        keys.style.width = "40px";
+        keys.style.width = PIANO_KEYS_WIDTH + "px";
         keys.style.height = gridHeight + "px";
         for (let row = 0; row < rowCount; row++) {
             const pitch = this.maxPitch - row;
@@ -174,12 +238,20 @@ class PianoRoll {
         grid.appendChild(noteBlocksLayer);
         this.refreshNoteBlocks();
 
+        const playhead = document.createElement("div");
+        playhead.className = "playhead";
+        playhead.style.height = gridHeight + "px";
+        playhead.style.display = "none";
+        this.playheadEl = playhead;
+        grid.appendChild(playhead);
+
         grid.addEventListener("mousedown", evt => this.onGridMouseDown(evt, grid));
         grid.addEventListener("mousemove", evt => this.onGridMouseMove(evt, grid));
         window.addEventListener("mouseup", () => this.onGridMouseUp());
 
         scrollArea.appendChild(keys);
         scrollArea.appendChild(grid);
+        this.scrollAreaEl = scrollArea;
 
         editor.appendChild(ruler);
         editor.appendChild(scrollArea);
@@ -231,10 +303,30 @@ class PianoRoll {
         this.onChange?.();
     }
 
-    private refreshNoteBlocks() {
-        if (!this.noteBlocksLayer) return;
-        this.noteBlocksLayer.innerHTML = "";
-        const track = this.song.tracks[this.activeTrack] ?? [];
+    /* Positions the playhead line at the given grid step and scrolls it into view (called from a
+       requestAnimationFrame loop in app.ts while a ZspuPlayer is playing). Pass null to hide it
+       when playback stops. */
+    setPlayheadStep(step: number | null) {
+        if (!this.playheadEl || !this.scrollAreaEl) return;
+        if (step === null) {
+            this.playheadEl.style.display = "none";
+            return;
+        }
+        this.playheadEl.style.display = "";
+        const x = step * STEP_WIDTH;
+        this.playheadEl.style.left = x + "px";
+
+        const visibleWidth = this.scrollAreaEl.clientWidth - PIANO_KEYS_WIDTH;
+        const scrollLeft = this.scrollAreaEl.scrollLeft;
+        const margin = visibleWidth * 0.2;
+        if (x < scrollLeft + margin || x > scrollLeft + visibleWidth - margin) {
+            this.scrollAreaEl.scrollLeft = Math.max(0, x - margin);
+        }
+    }
+
+    private renderTrackBlocks(trackIndex: number, isActive: boolean) {
+        const track = this.song.tracks[trackIndex] ?? [];
+        const color = trackColor(trackIndex);
 
         let runStart = -1;
         let runNote = -1;
@@ -243,12 +335,14 @@ class PianoRoll {
             if (runNote < this.minPitch || runNote > this.maxPitch) return;
             const row = this.maxPitch - runNote;
             const block = document.createElement("div");
-            block.className = "note-block";
+            block.className = "note-block" + (isActive ? " active-track-block" : "");
             block.style.left = (runStart * STEP_WIDTH) + "px";
             block.style.top = (row * ROW_HEIGHT) + "px";
             block.style.width = ((endExclusive - runStart) * STEP_WIDTH) + "px";
             block.style.height = ROW_HEIGHT + "px";
-            block.textContent = noteName(runNote);
+            block.style.background = color;
+            block.style.borderColor = color;
+            if (isActive) block.textContent = noteName(runNote);
             this.noteBlocksLayer!.appendChild(block);
         };
 
@@ -261,6 +355,19 @@ class PianoRoll {
             }
         }
         flushRun(track.length);
+    }
+
+    private refreshNoteBlocks() {
+        if (!this.noteBlocksLayer) return;
+        this.noteBlocksLayer.innerHTML = "";
+        // Dimmed background tracks first, then the active track on top and at full opacity, so
+        // it's always clearly readable even where other tracks' notes overlap the same cells.
+        for (const trackIndex of this.visibleTrackIndexes()) {
+            if (trackIndex !== this.activeTrack) {
+                this.renderTrackBlocks(trackIndex, false);
+            }
+        }
+        this.renderTrackBlocks(this.activeTrack, true);
     }
 }
 

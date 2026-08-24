@@ -65,9 +65,17 @@ Source lives in `src/`:
     `zcpu-notes/wire/lua/entities/gmod_wire_spu/cl_spuvm.lua`'s `VM:Reset()`): square/saw/tri/sine
     mapped to their `synth/*.wav` resource paths. Shared between script generation here and
     `player.ts`'s oscillator-type mapping.
-  - `CreateDBLines` chunks each track's step array into ZSPU `db ...;` data-statement lines (32
-    values per line). Mutates its input via `.splice` — callers must pass a cloned array if they
-    need the original afterward (`processing.ts`'s `generateScript` does this).
+  - `CreateDBLines` first **pads every track to the same length** (with `-1`) before chunking each
+    into ZSPU `db ...;` data-statement lines (32 values per line). This padding matters: the
+    generated `main()` loop shares one index `i` across every track, counting up to
+    `tracklen = strlen(the longest track)`. A track's own `db 0;` is only a marker for where
+    `strlen()` should stop — it does **not** stop the shared loop from reading `trackN[i]` past
+    that point. Real bug hit and fixed this session: without padding, a track shorter than
+    `tracklen` reads straight through into whatever memory comes after its own declared data (the
+    next track's real note values, misread as this track's continuing melody) — reported as a
+    constant/stuck-sounding "solid tone" on a real multi-track file (`Bolero-Ravel.mid`, 26 tracks
+    of wildly different lengths). `CreateDBLines` clones its input internally (via the padding
+    step) and does not mutate the array passed in, unlike before.
   - `CreateFileString(dblinesin, tempo, waveforms, volumes)` assembles the full ZSPU script:
     per-channel `wset`/`chwave`/`chvolume`/`chstart` setup blocks (one **named wave string var per
     track**, e.g. `wave0`/`wave1`/..., each bound to that track's chosen waveform — not a single
@@ -77,14 +85,25 @@ Source lives in `src/`:
     array per tick and calls `chpitch` per channel, a `tempo()` busy-wait helper, a `strlen()`
     helper (ZSPU has no native one), and finally the `db` data blocks from `CreateDBLines`.
 - **`processing.ts`** — the editable song model:
-  - `Song` — `{tracks: number[][], tempo: number, waveforms: WaveformId[], volumes: number[]}`.
-    `tracks` is mutated **in place** by the piano roll editor; nothing else here is currently
-    editable (tempo, in particular, is fixed at load time — the MIDI file's first tempo event).
+  - `Song` — `{tracks: number[][], tempo: number, waveforms: WaveformId[], volumes: number[],
+    muted: boolean[], solo: boolean[]}`, all per-track arrays parallel to `tracks`. `tracks` is
+    mutated **in place** by the piano roll editor; nothing else here is currently editable (tempo,
+    in particular, is fixed at load time — the MIDI file's first tempo event).
   - `loadMidi(buffer): Song` — parses + calls `getnotes()`, defaults every track to `"sine"` at
-    volume `0.5`.
-  - `generateScript(song): string` — runs `CreateDBLines`/`CreateFileString` fresh from *current*
-    `song` state. Called on demand at each Play/Download/Copy click, not cached — this is what
-    makes piano-roll edits actually show up in playback and exported output.
+    volume `0.5`, unmuted, not soloed.
+  - `isTrackAudible(song, index)` — a track counts as audible (plays/exports) if it isn't muted,
+    and — if *any* track has `solo` set — it's one of the soloed ones. Explicit mute always beats
+    solo (standard DAW convention: muting a soloed track still silences it).
+  - `getAudibleSong(song): Song` — a reindexed copy containing only audible tracks (and their
+    matching waveforms/volumes) — muted/soloed-out tracks are never played or exported. Both
+    `generateScript` (below) and `app.ts`'s Play handler call this before using `song.tracks`, so
+    what you hear always matches what gets exported.
+  - `generateScript(song): string` — runs `getAudibleSong` then `CreateDBLines`/`CreateFileString`
+    fresh from *current* `song` state. Called on demand at each Play/Download/Copy click, not
+    cached — this is what makes piano-roll edits (including mute/solo) actually show up in
+    playback and exported output. Returns a short comment instead of a broken script if zero
+    tracks end up audible (the naive `longestTrack` index lookup in `CreateFileString` breaks on
+    an empty array otherwise).
 - **`player.ts`** — `ZspuPlayer`, a Web Audio playback engine for the "Play preview" button.
   Deliberately mimics the real ZSPU rather than doing generic MIDI/soundfont playback (see
   `zcpu-notes/docs/HLZASM.md`'s "SPU audio model" section for why): one `OscillatorNode` per
@@ -105,40 +124,78 @@ Source lives in `src/`:
   *converted/quantized* note arrays (`getnotes()`'s output, possibly edited by the piano roll), not
   the raw MIDI. All pitch/gain automation is scheduled up front via `AudioParam.setValueAtTime` at
   construction time, not driven by JS timers. One-shot (not looping like the real ZSPU's `main()`
-  does) — a new `ZspuPlayer` is constructed fresh on every Play click from current `song` state, so
-  edits since the last play are picked up.
+  does) — a new `ZspuPlayer` is constructed fresh on every Play click from `getAudibleSong(song)`
+  (see `processing.ts`), so edits and mute/solo changes since the last play are picked up.
+  `getCurrentStep()` returns the current playback position in grid steps (or `null` when not
+  playing), computed from the stored `AudioContext` start time — polled by `app.ts` via
+  `requestAnimationFrame` to drive the piano roll's playhead/follow-scroll.
 - **`pianoRoll.ts`** — `PianoRoll`, the note editor. Takes a `Song` and a container element;
-  renders (and owns all interaction for) a track sidebar (waveform `<select>` + volume
-  `<input type=range>` per track, click to select which track's grid is shown — mutates
-  `song.waveforms[i]`/`song.volumes[i]` directly) and a scrollable step/pitch grid for the active
-  track. Grid columns are `STEPS_PER_BEAT`-quantized steps (same resolution `getnotes()` already
-  produces); rows are the active track's used pitch range ± padding, not the full 0-127 (keeps the
-  DOM small — typical songs span 20-40 semitones). Note blocks are rendered by scanning the active
-  track's `number[]` for runs of consecutive identical values and drawing one absolutely-positioned
-  labeled `<div>` per run. Click an empty cell to paint the clicked row's pitch there, click an
-  already-set cell to erase it to `-1`; drag continues that same paint/erase mode across the same
-  pitch row only (no diagonal painting — doesn't make sense for one monophonic value per step).
-  `PianoRoll.onChange` fires after any edit (`app.ts` wires it to stop any active playback, since a
-  playing `ZspuPlayer` was scheduled from a snapshot and won't reflect the edit until replayed).
-  **Known layout constraint, don't remove:** the timeline ruler above the grid is deliberately
-  *not* width-bound to the grid's full content width (which can be tens of thousands of px for a
-  long track) — an earlier version set `ruler.style.width = gridWidth + "px"` and, because nothing
-  wrapped it in a bounded+`overflow:hidden` container, that oversized block overflowed every
-  ancestor up to `<body>`, growing the whole page to match instead of just scrolling internally
-  (reproducible: load `Bolero-Ravel.mid`, ~26 tracks, thousands of steps — the page becomes tens of
-  thousands of px wide and screenshots/layout time out). The ruler doesn't scroll in sync with the
-  grid below it as a result — acceptable trade for this pass, don't "fix" by giving it an explicit
-  large width again without also properly clipping/scrolling it.
+  renders (and owns all interaction for) a track sidebar and a scrollable step/pitch grid that
+  shows **every audible track simultaneously** (not just the selected one — each gets a distinct
+  color, cycling through `TRACK_COLORS` by track index), plus the currently-selected ("active")
+  track always shown too even if it's muted, so you can still see/edit what you're deciding
+  whether to keep. The active track's blocks render at full opacity with a note-name label and on
+  top (`.active-track-block` in `app.css`); every other visible track renders dimmed
+  (`opacity: 0.4`) as background context, unlabeled. **Editing always targets only the active
+  track** regardless of how many others are visually overlaid — no ambiguity about which track a
+  click applies to.
+  - Track sidebar row: click to make that track active/edited. **Mute** (`M`) and **Solo** (`S`)
+    checkboxes wire to `song.muted[i]`/`song.solo[i]` (see `processing.ts`'s `isTrackAudible` for
+    the interaction between them) — toggling either calls `onChange` *and* a full `render()`,
+    since mute/solo changes who's visible in the overlay, not just export/playback. Rendered as
+    colored toggle badges, not plain checkboxes (`.toggle-badge` in `app.css`) — a real native
+    `<input type=checkbox>` still backs each one (visually hidden, `opacity:0`, inside the
+    `<label>`) for click/keyboard/AT semantics, but the visible state is a `<span>` sibling styled
+    via `input:checked + span` (red background when muted, yellow when soloed) — plain XP.css
+    checkboxes were too small/subtle to tell active from inactive at a glance. A small color
+    swatch shows that track's overlay color. Waveform `<select>` and volume `<input type=range>`
+    as before, mutating `song.waveforms[i]`/`song.volumes[i]` directly.
+  - Grid columns are `STEPS_PER_BEAT`-quantized steps (same resolution `getnotes()` already
+    produces); rows span the *union* of every currently-visible track's used pitch range ± padding
+    (not the full 0-127 — keeps the DOM reasonably small, though showing many tracks at once
+    widens this range compared to a single-track view). Note blocks are rendered by scanning each
+    visible track's `number[]` for runs of consecutive identical values and drawing one
+    absolutely-positioned `<div>` per run, colored per-track.
+  - Click an empty cell (on the active track) to paint the clicked row's pitch there, click an
+    already-set cell to erase it to `-1`; drag continues that same paint/erase mode across the same
+    pitch row only (no diagonal painting — doesn't make sense for one monophonic value per step).
+  - **Playhead**: a red vertical line (`.playhead`), positioned via `setPlayheadStep(step | null)`
+    — `app.ts` drives this from a `requestAnimationFrame` loop polling `ZspuPlayer.getCurrentStep()`
+    while playing. Auto-scrolls `.piano-scroll-area` horizontally to keep the playhead in view
+    (with a 20%-of-viewport margin before it triggers a re-scroll, not scrolled every frame).
+  - **Resizable**: `.piano-scroll-area` uses native CSS `resize: both` (drag the bottom-right
+    corner) so a big file like `Bolero-Ravel.mid` isn't stuck in a fixed small viewport — couldn't
+    get automated drag testing to trigger the native resize handle (a known friction point with
+    synthetic mouse events and browser-native resize handles), verify by hand if touching this.
+  - `PianoRoll.onChange` fires after any edit or mute/solo/waveform/volume change (`app.ts` wires
+    it to stop any active playback, since a playing `ZspuPlayer` was scheduled from a snapshot and
+    won't reflect the change until replayed).
+  - **Known layout constraint, don't remove:** the timeline ruler above the grid is deliberately
+    *not* width-bound to the grid's full content width (which can be tens of thousands of px for a
+    long track) — an earlier version set `ruler.style.width = gridWidth + "px"` and, because
+    nothing wrapped it in a bounded+`overflow:hidden` container, that oversized block overflowed
+    every ancestor up to `<body>`, growing the whole page to match instead of just scrolling
+    internally (reproducible: load `Bolero-Ravel.mid`, ~26 tracks, thousands of steps — the page
+    becomes tens of thousands of px wide and screenshots/layout time out). The ruler doesn't
+    scroll in sync with the grid below it as a result — acceptable trade for this pass, don't "fix"
+    by giving it an explicit large width again without also properly clipping/scrolling it. The
+    same defensive pattern (`overflow-x: auto` + `max-width: 100%`) is now also applied to
+    `.piano-roll` itself, as a safety net in case the resize handle above is ever dragged very wide.
 - **`download.ts`** — `downloadTextFile(content, filename, mimeType)`, a small native
   Blob + `URL.createObjectURL` + `<a download>` helper.
 - **`app.ts`** — the only remaining DOM-wiring code, and the sole `xp.css` import site. Holds one
-  `Song | null` and one `ZspuPlayer | null`. Both the `#file` `<input>`'s `change` event and
+  `Song | null`, one `ZspuPlayer | null`, one `PianoRoll | null`, and a `requestAnimationFrame`
+  handle for the playhead-follow loop. Both the `#file` `<input>`'s `change` event and
   drag-and-drop onto `#dropzone` (dragover/dragleave toggle a `.dragover` CSS class; drop reads
   `evt.dataTransfer.files[0]`) funnel into a shared `loadFile(file: File)` that calls `loadMidi`,
   reveals the Play window's `#controls` and the Piano Roll window, and constructs a `PianoRoll`.
-  Play/Stop/Volume/Download/Copy wire to `ZspuPlayer`/`generateScript`/`downloadTextFile` as
-  described above — Play and Download/Copy both read *current* `song` state at click time, so
-  piano-roll edits need no extra plumbing to take effect. A `window`-level `dragover`/`drop`
+  Play constructs a fresh `ZspuPlayer` from `getAudibleSong(song)` (muted/soloed-out tracks never
+  reach playback) and starts a `followPlayhead()` `requestAnimationFrame` loop polling
+  `player.getCurrentStep()` into `pianoRoll.setPlayheadStep(...)`, cancelled by
+  `stopFollowingPlayhead()` on Stop, on natural playback end, or on any `PianoRoll.onChange`.
+  Download/Copy call `generateScript(song)` fresh (which internally filters through
+  `getAudibleSong` too) — both read *current* `song` state at click time, so piano-roll edits and
+  mute/solo changes need no extra plumbing to take effect. A `window`-level `dragover`/`drop`
   listener pair calls `preventDefault()` so a drop outside `#dropzone` doesn't navigate the page
   away to the dropped file.
 

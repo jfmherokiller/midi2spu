@@ -6,6 +6,8 @@ export interface Song {
     tempo: number;
     waveforms: WaveformId[];
     volumes: number[];
+    muted: boolean[];
+    solo: boolean[];
 }
 
 const DEFAULT_VOLUME = 0.5;
@@ -16,11 +18,41 @@ export function loadMidi(midi: ArrayBuffer): Song {
     let tracks = getnotes(midicontent);
     let waveforms: WaveformId[] = tracks.map(() => "sine");
     let volumes: number[] = tracks.map(() => DEFAULT_VOLUME);
-    return {tracks, tempo, waveforms, volumes};
+    let muted: boolean[] = tracks.map(() => false);
+    let solo: boolean[] = tracks.map(() => false);
+    return {tracks, tempo, waveforms, volumes, muted, solo};
+}
+
+/* A track is audible (plays back / exports) if it isn't muted, and - if any track is soloed -
+   it's one of the soloed ones. Explicit mute always wins over solo (standard DAW convention). */
+export function isTrackAudible(song: Song, index: number): boolean {
+    if (song.muted[index]) return false;
+    const anySoloed = song.solo.some(s => s);
+    return !anySoloed || song.solo[index];
+}
+
+/* A copy of `song` containing only audible tracks (and their matching waveforms/volumes),
+   reindexed - this is what actually gets played back or exported, so a muted/soloed-out track
+   never reaches the output. `tracks`/`waveforms`/`volumes` are shallow-copied (not deep-cloned);
+   don't mutate the returned arrays' contents expecting it to affect the original song. */
+export function getAudibleSong(song: Song): Song {
+    const audibleIndexes = song.tracks.map((_, i) => i).filter(i => isTrackAudible(song, i));
+    return {
+        tracks: audibleIndexes.map(i => song.tracks[i]),
+        tempo: song.tempo,
+        waveforms: audibleIndexes.map(i => song.waveforms[i]),
+        volumes: audibleIndexes.map(i => song.volumes[i]),
+        muted: audibleIndexes.map(() => false),
+        solo: audibleIndexes.map(() => false),
+    };
 }
 
 export function generateScript(song: Song): string {
-    let dblines: string[][] = CreateDBLines(song.tracks.map(track => track.slice()));
-    let file = CreateFileString(dblines, song.tempo, song.waveforms, song.volumes);
+    const audible = getAudibleSong(song);
+    if (audible.tracks.length === 0) {
+        return "// No audible tracks - unmute or un-solo at least one track before exporting.\n";
+    }
+    let dblines: string[][] = CreateDBLines(audible.tracks);
+    let file = CreateFileString(dblines, audible.tempo, audible.waveforms, audible.volumes);
     return file.join("");
 }
