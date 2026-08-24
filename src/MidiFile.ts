@@ -49,8 +49,8 @@ class MidiHeader
 class Chunk {
     id: string;
     length: number;
-    data: string;
-    constructor(newid: string, newlength: number, newdata: string) {
+    data: ArrayBuffer;
+    constructor(newid: string, newlength: number, newdata: ArrayBuffer) {
         this.id = newid;
         this.length = newlength;
         this.data = newdata;
@@ -60,16 +60,16 @@ class Chunk {
 class Midifile {
     lastEventTypeByte;
     header:MidiHeader;
-    stream: StringStream;
+    stream: ByteStream;
     tracks:IEvent[][] = new Array();
-    constructor(data: string) {
+    constructor(data: ArrayBuffer) {
         let ticksPerBeat: number;
-        this.stream = new StringStream(data);
+        this.stream = new ByteStream(data);
         const headerChunk = this.readChunk(this.stream);
         if (headerChunk.id !== "MThd" || headerChunk.length !== 6) {
             throw "Bad .mid file - header not found";
         }
-        var headerStream = new StringStream(headerChunk.data);
+        var headerStream = new ByteStream(headerChunk.data);
         var formatType = headerStream.readInt16();
         var trackCount = headerStream.readInt16();
         var timeDivision = headerStream.readInt16();
@@ -87,7 +87,7 @@ class Midifile {
             if (trackChunk.id !== "MTrk") {
                 throw "Unexpected chunk - expected MTrk, got " + trackChunk.id;
             }
-            let trackStream = new StringStream(trackChunk.data);
+            let trackStream = new ByteStream(trackChunk.data);
             while (!trackStream.eof()) {
                 var event = this.readEvent(trackStream);
                 this.tracks[i].push(event);
@@ -95,12 +95,12 @@ class Midifile {
             }
         }
     }
-    readChunk(stream: StringStream): Chunk {
-        const id = stream.read(4);
+    readChunk(stream: ByteStream): Chunk {
+        const id = stream.readString(4);
         const length = stream.readInt32();
-        return new Chunk(id, length, stream.read(length));
+        return new Chunk(id, length, stream.readBytes(length));
     }
-    readEvent(stream:StringStream) {
+    readEvent(stream:ByteStream) {
         var event = <IEvent>({});
         event.deltaTime = stream.readVarInt();
         var eventTypeByte = stream.readInt8();
@@ -120,31 +120,31 @@ class Midifile {
                         return event;
                     case 0x01:
                         event.subtype = "text";
-                        event.text = stream.read(length);
+                        event.text = stream.readString(length);
                         return event;
                     case 0x02:
                         event.subtype = "copyrightNotice";
-                        event.text = stream.read(length);
+                        event.text = stream.readString(length);
                         return event;
                     case 0x03:
                         event.subtype = "trackName";
-                        event.text = stream.read(length);
+                        event.text = stream.readString(length);
                         return event;
                     case 0x04:
                         event.subtype = "instrumentName";
-                        event.text = stream.read(length);
+                        event.text = stream.readString(length);
                         return event;
                     case 0x05:
                         event.subtype = "lyrics";
-                        event.text = stream.read(length);
+                        event.text = stream.readString(length);
                         return event;
                     case 0x06:
                         event.subtype = "marker";
-                        event.text = stream.read(length);
+                        event.text = stream.readString(length);
                         return event;
                     case 0x07:
                         event.subtype = "cuePoint";
-                        event.text = stream.read(length);
+                        event.text = stream.readString(length);
                         return event;
                     case 0x20:
                         event.subtype = "midiChannelPrefix";
@@ -193,25 +193,25 @@ class Midifile {
                         return event;
                     case 0x7f:
                         event.subtype = "sequencerSpecific";
-                        event.data = stream.read(length);
+                        event.data = stream.readBytes(length);
                         return event;
                     default:
                         // console.log("Unrecognised meta event subtype: " + subtypeByte);
                         event.subtype = "unknown";
-                        event.data = stream.read(length);
+                        event.data = stream.readBytes(length);
                         return event;
                 }
-                //event.data = stream.read(length);
+                //event.data = stream.readBytes(length);
                 //return event;
             } else if (eventTypeByte === 0xf0) {
                 event.type = "sysEx";
                 length = stream.readVarInt();
-                event.data = stream.read(length);
+                event.data = stream.readBytes(length);
                 return event;
             } else if (eventTypeByte === 0xf7) {
                 event.type = "dividedSysEx";
                 length = stream.readVarInt();
-                event.data = stream.read(length);
+                event.data = stream.readBytes(length);
                 return event;
             } else {
                 throw "Unrecognised MIDI event type byte: " + eventTypeByte;
@@ -283,38 +283,45 @@ class Midifile {
 
 }
 
-/* Wrapper for accessing strings through sequential reads */
-class StringStream {
+/* Wrapper for accessing an ArrayBuffer through sequential reads */
+class ByteStream {
     position = 0;
-    str: string;
-    constructor(inputstring: string) {
-        this.str = inputstring;
+    view: DataView;
+    constructor(buffer: ArrayBuffer) {
+        this.view = new DataView(buffer);
     }
 
+    /* read `length` bytes and return them as a new ArrayBuffer */
+    readBytes(length: number): ArrayBuffer {
+        var result = this.view.buffer.slice(
+            this.view.byteOffset + this.position,
+            this.view.byteOffset + this.position + length
+        ) as ArrayBuffer;
+        this.position += length;
+        return result;
+    }
 
-
-    read(length) {
-        var result = this.str.substr(this.position, length);
+    /* read `length` bytes and decode them as Latin1/ASCII text
+       (MIDI chunk IDs and meta-event text are single-byte-per-char) */
+    readString(length: number): string {
+        let result = "";
+        for (let i = 0; i < length; i++) {
+            result += String.fromCharCode(this.view.getUint8(this.position + i));
+        }
         this.position += length;
         return result;
     }
 
     /* read a big-endian 32-bit integer */
     readInt32() {
-        var result = (
-            (this.str.charCodeAt(this.position) << 24)
-            + (this.str.charCodeAt(this.position + 1) << 16)
-            + (this.str.charCodeAt(this.position + 2) << 8)
-            + this.str.charCodeAt(this.position + 3));
+        var result = this.view.getUint32(this.position);
         this.position += 4;
         return result;
     }
 
     /* read a big-endian 16-bit integer */
     readInt16() {
-        var result = (
-            (this.str.charCodeAt(this.position) << 8)
-            + this.str.charCodeAt(this.position + 1));
+        var result = this.view.getUint16(this.position);
         this.position += 2;
         return result;
     }
@@ -322,17 +329,14 @@ class StringStream {
     /* read an 8-bit integer */
 
     readInt8(signed?): number {
-        let result = this.str.charCodeAt(this.position);
-        if (signed && result > 127) {
-            result -= 256;
-        }
+        let result = signed ? this.view.getInt8(this.position) : this.view.getUint8(this.position);
         this.position += 1;
         return result;
     }
 
 
     eof() {
-        return this.position >= this.str.length;
+        return this.position >= this.view.byteLength;
     }
 
 	/* read a MIDI-style variable-length integer

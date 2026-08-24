@@ -1,14 +1,12 @@
-﻿///<reference path="../typings/globals/node/index.d.ts" />
-import {Midifile} from "./MidiFile";
+﻿import {Midifile} from "./MidiFile";
 import {getnotes, CreateDBLines, GetTempo, CreateFileString} from "./utilityfunctions";
+import {downloadTextFile} from "./download";
 
-function parsethefile(midi: string) {
+function parsethefile(midi: ArrayBuffer) {
     let midicontent = new Midifile(midi);
     let tempo = GetTempo(midicontent);
     let dblines: string[][] = CreateDBLines(getnotes(midicontent));
     let file = CreateFileString(dblines, tempo);
-    let download = require("downloadjs");
-    download(file.join(""), "songtest.txt", "text/plain");
-    console.log("AAAAAAA");
+    downloadTextFile(file.join(""), "songtest.txt", "text/plain");
 }
 export {parsethefile}
