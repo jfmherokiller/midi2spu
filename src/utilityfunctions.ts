@@ -61,7 +61,6 @@ function getnotes(midi: Midifile) {
             }
             if (midievent.channel === PERCUSSION_CHANNEL) {
                 hasPercussionEvent = true;
-                continue;
             }
             if (midievent.subtype === "noteOn") {
                 currentNote = midievent.noteNumber ?? -1;
