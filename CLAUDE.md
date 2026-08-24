@@ -69,7 +69,10 @@ Source lives in `src/`, five files:
 When changing the generated ZSPU script format, `constructBodyOfFile` and `constructLoopBlocks` in
 `utilityfunctions.ts` are the two functions that hand-emit the ZSPU source text — the ZSPU
 language itself (`fpwr`, `chpitch`, `wset`, `chwave`, `chvolume`, `chstart`, `timer`, etc.) is not
-implemented here, only text-generated as a target format for the Lua entity linked above.
+implemented here, only text-generated as a target format for the Lua entity linked above. See
+**[`docs/HLZASM.md`](docs/HLZASM.md)** for the full language/instruction-set reference (it's
+called HLZASM, not "ZSPU bytecode" — that doc has the full opcode tables and syntax rules, sourced
+directly from the Wiremod `wire` addon's compiler and VM source).
 
 There is no in-browser playback/preview of the uploaded MIDI file — the original `index.html` did
 load an external `midi.js` script (almost certainly the mudcube/MIDI.js soundfont-playback
