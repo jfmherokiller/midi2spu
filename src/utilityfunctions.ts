@@ -18,6 +18,16 @@ const DEFAULT_MICROSECONDS_PER_BEAT = 500000;
    which is index 9 here since event.channel is 0-indexed (eventTypeByte & 0x0f). */
 const PERCUSSION_CHANNEL = 9;
 
+/* The 4 waveform slots the SPU preloads on reset (VM:Reset() in cl_spuvm.lua) - the only
+   waveforms guaranteed to exist without a custom sound resource. */
+export type WaveformId = "square" | "saw" | "tri" | "sine";
+export const WAVEFORM_PATHS: Record<WaveformId, string> = {
+    square: "synth/square.wav",
+    saw: "synth/saw.wav",
+    tri: "synth/tri.wav",
+    sine: "synth/sine.wav",
+};
+
 function getTempo(midi: Midifile) {
     let tempoEvent = midi.tracks[0].filter(x => x.microsecondsPerBeat != null)[0];
     let microsecondsPerBeat = tempoEvent?.microsecondsPerBeat ?? DEFAULT_MICROSECONDS_PER_BEAT;
@@ -57,23 +67,15 @@ function getnotes(midi: Midifile) {
     return notes;
 }
 
-function createWaveChannelBlocks(needed:number) {
+function createWaveChannelBlocks(volumes:number[]) {
     let baseblock:string[] = [];
-    baseblock.push("// Set track wave to channel 0 and start\n");
-    baseblock.push("wset 0,trackwave;\n");
-    baseblock.push("chwave 0,0;\n");
-    baseblock.push("chvolume 0,2.5;\n");
-    baseblock.push("chstart 0;\n");
-    baseblock.push("\n");
-    if (needed > 1) {
-        for (let i = 1; i < needed; i++) {
-            baseblock.push("// Set track wave to channel " + i + "and start\n");
-            baseblock.push("wset " + i + ",trackwave;\n");
-            baseblock.push("chwave " + i + "," + i + ";\n");
-            baseblock.push("chvolume " + i + ",2.5;\n");
-            baseblock.push("chstart " + i + ";\n");
-            baseblock.push("\n");
-        }
+    for (let i = 0; i < volumes.length; i++) {
+        baseblock.push("// Set track wave to channel " + i + " and start\n");
+        baseblock.push("wset " + i + ",wave" + i + ";\n");
+        baseblock.push("chwave " + i + "," + i + ";\n");
+        baseblock.push("chvolume " + i + "," + volumes[i] + ";\n");
+        baseblock.push("chstart " + i + ";\n");
+        baseblock.push("\n");
     }
     return baseblock;
 }
@@ -110,7 +112,7 @@ function constructLoopBlocks(needed:number) {
     }
     return noteblocks;
 }
-function constructBodyOfFile(numberOfTracks:number, longesttrack:number, tempo:number) {
+function constructBodyOfFile(numberOfTracks:number, longesttrack:number, tempo:number, waveforms:WaveformId[]) {
     let file:string[] = [];
     file.push("// Get track length\n");
     file.push("tracklen = strlen(track" + longesttrack + ");\n");
@@ -146,18 +148,20 @@ function constructBodyOfFile(numberOfTracks:number, longesttrack:number, tempo:n
     file.push("float tracklen;\n");
     file.push("float time, timestamp;\n");
     file.push("\n");
-    file.push("string trackwave,\"synth/sine_880.wav\";\n");
+    for (let i = 0; i < waveforms.length; i++) {
+        file.push("string wave" + i + ",\"" + WAVEFORM_PATHS[waveforms[i]] + "\";\n");
+    }
     file.push("\n");
     return file;
 }
-function createFileString(dblinesin:string[][], tempo:number) {
+function createFileString(dblinesin:string[][], tempo:number, waveforms:WaveformId[], volumes:number[]) {
     let longestTrack = dblinesin.map(function (a) {
         return a.length;
     }).indexOf(Math.max.apply(Math, dblinesin.map(function (a) {
         return a.length;
     })));
-    let file = createWaveChannelBlocks(dblinesin.length);
-    file = file.concat(constructBodyOfFile(dblinesin.length, longestTrack, tempo));
+    let file = createWaveChannelBlocks(volumes);
+    file = file.concat(constructBodyOfFile(dblinesin.length, longestTrack, tempo, waveforms));
     //file.concat(require("fs").readFileSync("header.txt", 'utf8'));
     for (let dbline of dblinesin) {
         file = file.concat(dbline);

@@ -7,17 +7,38 @@
     <link rel="stylesheet" href="app.css" type="text/css" />
 </head>
 <body>
-    <h1>Select your midi file</h1>
-    <input type="file" id="file" name="file" enctype="multipart/form-data" />
-    <div id="dropzone">or drag and drop a .mid file here</div>
-    <div id="controls" style="display:none">
-        <button id="play">Play preview</button>
-        <button id="stop" disabled>Stop</button>
-        <button id="download">Download .txt</button>
-        <button id="copy">Copy to clipboard</button>
-        <label for="volume">Volume</label>
-        <input type="range" id="volume" min="0" max="1" step="0.01" value="0.5" />
+    <div class="window" id="play-window">
+        <div class="title-bar">
+            <div class="title-bar-text">midi2spu</div>
+        </div>
+        <div class="window-body">
+            <p>Select your midi file</p>
+            <input type="file" id="file" name="file" enctype="multipart/form-data" />
+            <div id="dropzone">or drag and drop a .mid file here</div>
+            <div id="controls" style="display:none">
+                <div class="field-row">
+                    <button id="play">Play preview</button>
+                    <button id="stop" disabled>Stop</button>
+                    <button id="download">Download .txt</button>
+                    <button id="copy">Copy to clipboard</button>
+                </div>
+                <div class="field-row" style="width: 300px">
+                    <label for="volume">Volume</label>
+                    <input type="range" id="volume" min="0" max="1" step="0.01" value="0.5" />
+                </div>
+            </div>
+        </div>
     </div>
+
+    <div class="window" id="piano-roll-window" style="display:none">
+        <div class="title-bar">
+            <div class="title-bar-text">Piano Roll Editor</div>
+        </div>
+        <div class="window-body">
+            <div id="piano-roll"></div>
+        </div>
+    </div>
+
     <script type="module" src="/src/app.ts"></script>
 </body>
 </html>

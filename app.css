@@ -1,23 +1,133 @@
-﻿body {
-    font-family: 'Segoe UI', sans-serif;
+body {
+    min-height: 100vh;
+    margin: 0;
+    padding: 24px;
+    box-sizing: border-box;
+    background: linear-gradient(135deg, #1e5799 0%, #2989d8 50%, #7db9e8 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 16px;
 }
 
-span {
-    font-style: italic;
+#play-window {
+    width: 420px;
 }
 
 #dropzone {
     margin-top: 8px;
     padding: 24px;
-    border: 2px dashed #999;
-    border-radius: 6px;
-    max-width: 320px;
+    border: 2px dashed #333;
+    background: #fff;
+    max-width: 100%;
+    box-sizing: border-box;
     text-align: center;
-    color: #666;
+    color: #444;
 }
 
 #dropzone.dragover {
-    border-color: #333;
+    border-color: #000;
+    color: #000;
+    background: #d4e4fb;
+}
+
+#piano-roll-window {
+    width: 100%;
+    max-width: 1100px;
+}
+
+.piano-roll {
+    display: flex;
+    border: 1px solid #888;
+}
+
+.track-sidebar {
+    width: 220px;
+    flex: none;
+    max-height: 420px;
+    overflow-y: auto;
+    border-right: 1px solid #888;
+    background: #fff;
+}
+
+.track-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-bottom: 1px solid #ddd;
+    cursor: pointer;
+}
+
+.track-row.active {
+    background: #316AC5;
+    color: #fff;
+}
+
+.track-label {
+    flex: 1;
+    font-size: 12px;
+    white-space: nowrap;
+}
+
+.piano-editor {
+    flex: 1;
+    min-width: 0;
+    background: #fff;
+}
+
+.piano-ruler {
+    width: auto;
+    margin-left: 40px;
+    overflow: hidden;
+    border-bottom: 1px solid #888;
+}
+
+.piano-scroll-area {
+    display: flex;
+    max-height: 400px;
+    overflow: auto;
+}
+
+.piano-keys {
+    flex: none;
+    position: sticky;
+    left: 0;
+    background: #eee;
+    border-right: 1px solid #888;
+    z-index: 1;
+}
+
+.piano-key {
+    box-sizing: border-box;
+    border-bottom: 1px solid #ccc;
+    font-size: 10px;
+    line-height: 16px;
+    padding-left: 4px;
     color: #333;
-    background: #f0f0f0;
+}
+
+.piano-grid {
+    position: relative;
+    flex: none;
+    background-color: #fdfdfd;
+}
+
+.note-blocks {
+    position: absolute;
+    top: 0;
+    left: 0;
+}
+
+.note-block {
+    position: absolute;
+    box-sizing: border-box;
+    background: #316AC5;
+    border: 1px solid #1c3f7c;
+    color: #fff;
+    font-size: 10px;
+    line-height: 14px;
+    overflow: hidden;
+    white-space: nowrap;
+    pointer-events: none;
 }

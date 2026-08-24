@@ -1,6 +1,8 @@
-import {convertMidi, ConversionResult} from "./processing"
+import "xp.css/dist/XP.css"
+import {loadMidi, generateScript, Song} from "./processing"
 import {downloadTextFile} from "./download"
 import {ZspuPlayer} from "./player"
+import {PianoRoll} from "./pianoRoll"
 
 window.onload = () => {
     const fileInput = document.getElementById("file")! as HTMLInputElement;
@@ -11,8 +13,10 @@ window.onload = () => {
     const downloadButton = document.getElementById("download")! as HTMLButtonElement;
     const copyButton = document.getElementById("copy")! as HTMLButtonElement;
     const volumeSlider = document.getElementById("volume")! as HTMLInputElement;
+    const pianoRollWindow = document.getElementById("piano-roll-window")!;
+    const pianoRollContainer = document.getElementById("piano-roll")!;
 
-    let result: ConversionResult | null = null;
+    let song: Song | null = null;
     let player: ZspuPlayer | null = null;
 
     function setPlaying(playing: boolean) {
@@ -20,22 +24,22 @@ window.onload = () => {
         stopButton.disabled = !playing;
     }
 
-    async function loadFile(file: File) {
+    function stopPlayback() {
         player?.stop();
         setPlaying(false);
-
-        const buffer = await file.arrayBuffer();
-        result = convertMidi(buffer);
-        player = new ZspuPlayer(result.tracks, result.tempo);
-        player.onEnded = () => setPlaying(false);
-        player.setVolume(volumeSlider.valueAsNumber);
-
-        controls.style.display = "";
     }
 
-    volumeSlider.addEventListener("input", () => {
-        player?.setVolume(volumeSlider.valueAsNumber);
-    });
+    async function loadFile(file: File) {
+        stopPlayback();
+
+        const buffer = await file.arrayBuffer();
+        song = loadMidi(buffer);
+
+        controls.style.display = "";
+        pianoRollWindow.style.display = "";
+        const pianoRoll = new PianoRoll(song, pianoRollContainer);
+        pianoRoll.onChange = stopPlayback;
+    }
 
     fileInput.addEventListener("change", () => {
         const file = fileInput.files?.[0];
@@ -61,24 +65,29 @@ window.onload = () => {
     });
 
     playButton.addEventListener("click", () => {
-        if (!player) return;
+        if (!song) return;
+        player?.stop();
+        player = new ZspuPlayer(song.tracks, song.tempo, song.waveforms, song.volumes);
+        player.setVolume(volumeSlider.valueAsNumber);
+        player.onEnded = () => setPlaying(false);
         setPlaying(true);
         player.play();
     });
 
-    stopButton.addEventListener("click", () => {
-        player?.stop();
-        setPlaying(false);
+    stopButton.addEventListener("click", stopPlayback);
+
+    volumeSlider.addEventListener("input", () => {
+        player?.setVolume(volumeSlider.valueAsNumber);
     });
 
     downloadButton.addEventListener("click", () => {
-        if (!result) return;
-        downloadTextFile(result.scriptText, "songtest.txt", "text/plain");
+        if (!song) return;
+        downloadTextFile(generateScript(song), "songtest.txt", "text/plain");
     });
 
     copyButton.addEventListener("click", async () => {
-        if (!result) return;
-        await navigator.clipboard.writeText(result.scriptText);
+        if (!song) return;
+        await navigator.clipboard.writeText(generateScript(song));
         const originalText = copyButton.textContent;
         copyButton.textContent = "Copied!";
         setTimeout(() => {

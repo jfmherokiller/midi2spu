@@ -1,16 +1,32 @@
-/* Faithful preview of what the ZSPU will actually play: one sine oscillator per channel,
-   hard on/off steps (the generator never sets an ADSR envelope). Pitch reproduces the generator's
-   actual CHPITCH math: the generated script computes X = 2^(note/12)/100, and CHPITCH's Lua
-   implementation does ChangePitch(clamp(X*100, 0, 255), 0) - GMod's ChangePitch treats 100 as
-   normal/unshifted speed, so the real playback-rate multiplier is clamp(2^(note/12), 0, 255) / 100,
-   applied to the base sample's native pitch ("synth/sine_880.wav", 880Hz). */
+/* Faithful preview of what the ZSPU will actually play: one oscillator per channel (waveform
+   matching the track's chosen synth wave), hard on/off steps (the generator never sets an ADSR
+   envelope). Pitch reproduces the generator's actual CHPITCH math: the generated script computes
+   X = 2^(note/12)/100, and CHPITCH's Lua implementation does ChangePitch(clamp(X*100, 0, 255), 0)
+   - GMod's ChangePitch treats 100 as normal/unshifted speed, so the real playback-rate multiplier
+   is clamp(2^(note/12), 0, 255) / 100, applied to the base sample's native pitch.
+
+   Known unverified assumption: BASE_FREQUENCY=880 was chosen because the generator's old shared
+   waveform was literally named "sine_880.wav". The 4 real built-in SPU waveforms (synth/square.wav
+   etc, no frequency in the filename) have an unknown native pitch - kept at 880 for all four as a
+   working assumption; worth a real in-game check, not fixed blind without the actual asset files. */
+
+import {WaveformId} from "./utilityfunctions";
 
 const BASE_FREQUENCY = 880;
 const MAX_PITCH_PERCENT = 255;
 
+const OSCILLATOR_TYPES: Record<WaveformId, OscillatorType> = {
+    square: "square",
+    saw: "sawtooth",
+    tri: "triangle",
+    sine: "sine",
+};
+
 class ZspuPlayer {
     private tracks: number[][];
     private tempo: number;
+    private waveforms: WaveformId[];
+    private volumes: number[];
     private audioContext: AudioContext | null = null;
     private masterGain: GainNode | null = null;
     private trackScaling: number;
@@ -19,9 +35,11 @@ class ZspuPlayer {
     private endTimeout: number | null = null;
     onEnded?: () => void;
 
-    constructor(tracks: number[][], tempo: number) {
+    constructor(tracks: number[][], tempo: number, waveforms: WaveformId[], volumes: number[]) {
         this.tracks = tracks;
         this.tempo = tempo;
+        this.waveforms = waveforms;
+        this.volumes = volumes;
         this.trackScaling = 0.9 / Math.max(1, tracks.length);
     }
 
@@ -52,9 +70,11 @@ class ZspuPlayer {
         const startTime = audioContext.currentTime + 0.05;
         const duration = Math.max(...this.tracks.map(track => track.length)) * secondsPerStep;
 
-        for (const track of this.tracks) {
+        for (let trackIndex = 0; trackIndex < this.tracks.length; trackIndex++) {
+            const track = this.tracks[trackIndex];
+            const trackVolume = this.volumes[trackIndex] ?? 1;
             const oscillator = audioContext.createOscillator();
-            oscillator.type = "sine";
+            oscillator.type = OSCILLATOR_TYPES[this.waveforms[trackIndex] ?? "sine"];
             const gain = audioContext.createGain();
             gain.gain.setValueAtTime(0, startTime);
 
@@ -66,7 +86,7 @@ class ZspuPlayer {
                 } else {
                     const pitchPercent = Math.min(MAX_PITCH_PERCENT, Math.pow(2, note / 12));
                     oscillator.frequency.setValueAtTime(BASE_FREQUENCY * pitchPercent / 100, t);
-                    gain.gain.setValueAtTime(1, t);
+                    gain.gain.setValueAtTime(trackVolume, t);
                 }
             }
 
