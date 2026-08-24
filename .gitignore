@@ -218,3 +218,6 @@ pip-log.txt
 #node
 node_modules/*
 typings/*
+
+# JetBrains IDEs (WebStorm, etc.)
+.idea/

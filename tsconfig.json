@@ -1,19 +1,14 @@
 {
   "compilerOptions": {
-    "noEmitOnError": true,
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020", "DOM"],
+    "strict": true,
     "noImplicitAny": false,
     "removeComments": false,
     "sourceMap": true,
-    "target": "es5"
+    "types": ["node"]
   },
-  "exclude": [
-    "node_modules",
-    "wwwroot"
-  ],
-  "files": [
-    "src/app.ts",
-    "src/processing.ts",
-    "src/utilityfunctions.ts",
-    "src/MidiFile.ts"
-  ]
+  "include": ["src"]
 }
