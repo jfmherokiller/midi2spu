@@ -7,16 +7,18 @@ const PIANO_KEYS_WIDTH = 40; // keep in sync with app.css's .piano-ruler margin-
 const PITCH_PADDING = 3;
 const MIN_VISIBLE_SEMITONES = 12;
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-const WAVEFORM_OPTIONS: WaveformId[] = ["sine", "square", "saw", "tri"];
+const WAVEFORM_OPTIONS: WaveformId[] = ["sine", "square", "saw", "tri", "noise"];
 
-// Cycled by track index so every track visible in the overlay gets a distinct color.
-const TRACK_COLORS = [
-    "#316AC5", "#2e8b57", "#d2691e", "#8a2be2",
-    "#c0392b", "#008080", "#808000", "#c71585",
-];
+// One distinct hue per track, evenly spaced. 32 matches WireSPU_MaxChannels (cl_init.lua in the
+// wire submodule) - the SPU's own hard channel limit, so any file this project can actually
+// export a full channel mapping for gets a color that never repeats.
+const TRACK_COLOR_COUNT = 32;
+const PERCUSSION_COLOR = "#555555";
 
-function trackColor(trackIndex: number): string {
-    return TRACK_COLORS[trackIndex % TRACK_COLORS.length];
+function trackColor(trackIndex: number, isPercussion: boolean): string {
+    if (isPercussion) return PERCUSSION_COLOR;
+    const hue = (trackIndex * (360 / TRACK_COLOR_COUNT)) % 360;
+    return `hsl(${hue}, 65%, 42%)`;
 }
 
 function noteName(note: number): string {
@@ -102,7 +104,7 @@ class PianoRoll {
             row.className = "track-row" + (trackIndex === this.activeTrack ? " active" : "");
 
             const label = document.createElement("span");
-            label.textContent = "Track " + trackIndex;
+            label.textContent = "Track " + trackIndex + (this.song.isPercussion[trackIndex] ? " (drums)" : "");
             label.className = "track-label";
             row.appendChild(label);
 
@@ -144,7 +146,7 @@ class PianoRoll {
 
             const swatch = document.createElement("span");
             swatch.className = "track-color-swatch";
-            swatch.style.background = trackColor(trackIndex);
+            swatch.style.background = trackColor(trackIndex, this.song.isPercussion[trackIndex]);
             row.appendChild(swatch);
 
             const waveformSelect = document.createElement("select");
@@ -326,7 +328,7 @@ class PianoRoll {
 
     private renderTrackBlocks(trackIndex: number, isActive: boolean) {
         const track = this.song.tracks[trackIndex] ?? [];
-        const color = trackColor(trackIndex);
+        const color = trackColor(trackIndex, this.song.isPercussion[trackIndex]);
 
         let runStart = -1;
         let runNote = -1;

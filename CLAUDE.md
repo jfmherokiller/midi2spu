@@ -61,36 +61,56 @@ Source lives in `src/`:
     note but their elapsed time still counts. `STEPS_PER_BEAT` must stay in sync between this
     function and `GetTempo` — it's the shared time resolution both assume, and also what the piano
     roll editor's grid columns are quantized to.
-  - `WaveformId`/`WAVEFORM_PATHS` — the 4 real built-in ZSPU waveform slots (confirmed in
-    `zcpu-notes/wire/lua/entities/gmod_wire_spu/cl_spuvm.lua`'s `VM:Reset()`): square/saw/tri/sine
-    mapped to their `synth/*.wav` resource paths. Shared between script generation here and
-    `player.ts`'s oscillator-type mapping.
-  - `CreateDBLines` first **pads every track to the same length** (with `-1`) before chunking each
-    into ZSPU `db ...;` data-statement lines (32 values per line). This padding matters: the
-    generated `main()` loop shares one index `i` across every track, counting up to
-    `tracklen = strlen(the longest track)`. A track's own `db 0;` is only a marker for where
-    `strlen()` should stop — it does **not** stop the shared loop from reading `trackN[i]` past
-    that point. Real bug hit and fixed this session: without padding, a track shorter than
-    `tracklen` reads straight through into whatever memory comes after its own declared data (the
-    next track's real note values, misread as this track's continuing melody) — reported as a
-    constant/stuck-sounding "solid tone" on a real multi-track file (`Bolero-Ravel.mid`, 26 tracks
-    of wildly different lengths). `CreateDBLines` clones its input internally (via the padding
-    step) and does not mutate the array passed in, unlike before.
+  - `WaveformId`/`WAVEFORM_PATHS` — square/saw/tri/sine/noise mapped to their `synth/*.wav`
+    resource paths, confirmed against the real in-game sound browser (not just inferred from
+    source — `cl_spuvm.lua`'s `VM:Reset()` only auto-loads square/saw/tri/sine into the 4 default
+    slots, but this project's generator always `WSET`s its own explicit resource per channel
+    anyway, so it isn't limited to those 4). Per the user, uses the plain unprefixed files
+    (`synth/sine.wav` etc. — square/saw/tri/sine all have one) rather than the also-real
+    `_440`/`_880`/`_1760` precisely-pitched variants, for simplicity — meaning their actual native
+    pitch is unverified (see `BASE_FREQUENCY`'s comment in `player.ts`). `noise` → `synth/pink_
+    noise.wav`, the default for percussion tracks (see `isPercussion` below) since a noise sample
+    is far more percussion-appropriate than a tuned tone. Shared between script generation here,
+    `player.ts`'s oscillator-type mapping, and `pianoRoll.ts`'s waveform dropdown.
+  - `CreateDBLines` pads every track to the same total duration (with `-1`, so the whole ensemble
+    loops together in sync rather than each track wrapping back to its own start at a different
+    real time), then **run-length-encodes** each padded track into flat `[note,count, note,count,
+    ...]` pairs before chunking into ZSPU `db ...;` data-statement lines (32 values/line). Real
+    measured win: most held notes span many consecutive steps at `STEPS_PER_BEAT` quantization, so
+    this compresses 7-9x on real songs (`Bad Apple.mid`: 64,376 raw cells → 7,018; `Bolero-Ravel.mid`:
+    265,330 → 35,222) — the SPU's default memory model is 128K cells, so a large multi-track song
+    can genuinely fail to fit (plausibly manifesting as the chip not starting at all) without this.
+    `CreateDBLines` doesn't mutate the array passed in.
   - `CreateFileString(dblinesin, tempo, waveforms, volumes)` assembles the full ZSPU script:
     per-channel `wset`/`chwave`/`chvolume`/`chstart` setup blocks (one **named wave string var per
     track**, e.g. `wave0`/`wave1`/..., each bound to that track's chosen waveform — not a single
     shared `trackwave` for every channel, which is what this project did before; matches the real
     hand-written `mario_theme.txt` example's pattern of separate named wave vars per track — see
-    `zcpu-notes/docs/EXAMPLES.md`), a generated `main()` loop that reads one index into every track
-    array per tick and calls `chpitch` per channel, a `tempo()` busy-wait helper, a `strlen()`
-    helper (ZSPU has no native one), and finally the `db` data blocks from `CreateDBLines`.
+    `zcpu-notes/docs/EXAMPLES.md`), then `main()`. **Each track decodes its own RLE pairs
+    independently** — no shared index across tracks (an earlier version had one shared `i` counting
+    up to `tracklen = strlen(the longest track)`; a track shorter than that read straight through
+    into the next track's real data once `i` exceeded its own length, misread as its own continuing
+    melody — reported as a constant/stuck-sounding "solid tone" on `Bolero-Ravel.mid`, fixed in the
+    same session RLE was added, superseded by this design since RLE decoding needs per-track state
+    anyway). Per track `N`: `if (remainN <= 0) { noteN = trackN[idxN]; remainN = trackN[idxN+1];
+    idxN += 2; if (idxN >= tracklenN) idxN = 0; } remainN -= 1;` then the existing
+    `fpwr`/`chpitch` pitch application, unchanged. `tracklenN = strlen(trackN)` computed once per
+    track before `main()` (one per track now, not a single shared `tracklen`). Also emits a
+    `tempo()` busy-wait helper and a `strlen()` helper (ZSPU has no native one).
 - **`processing.ts`** — the editable song model:
   - `Song` — `{tracks: number[][], tempo: number, waveforms: WaveformId[], volumes: number[],
-    muted: boolean[], solo: boolean[]}`, all per-track arrays parallel to `tracks`. `tracks` is
-    mutated **in place** by the piano roll editor; nothing else here is currently editable (tempo,
-    in particular, is fixed at load time — the MIDI file's first tempo event).
-  - `loadMidi(buffer): Song` — parses + calls `getnotes()`, defaults every track to `"sine"` at
-    volume `0.5`, unmuted, not soloed.
+    muted: boolean[], solo: boolean[], isPercussion: boolean[]}`, all per-track arrays parallel to
+    `tracks`. `tracks` is mutated **in place** by the piano roll editor; nothing else here is
+    currently editable (tempo, in particular, is fixed at load time — the MIDI file's first tempo
+    event). `isPercussion[i]` is true if any event in that track was on the GM percussion channel
+    (computed by `getnotes()` in the same pass that builds `tracks`, so indices can't drift out of
+    sync with `getnotes()`'s own empty-track filtering).
+  - `loadMidi(buffer): Song` — parses + calls `getnotes()`, defaults every track to volume `0.5`,
+    unmuted, not soloed, and waveform `"sine"` — except percussion tracks (`isPercussion[i]`),
+    which default to `"noise"` instead (a real user-editable default, not automatic behavior:
+    percussion-channel MIDI events are still skipped entirely by `getnotes()`, so a percussion
+    track's note data starts out empty/silent regardless of its waveform, unless notes are
+    manually painted onto it in the piano roll).
   - `isTrackAudible(song, index)` — a track counts as audible (plays/exports) if it isn't muted,
     and — if *any* track has `solo` set — it's one of the soloed ones. Explicit mute always beats
     solo (standard DAW convention: muting a soloed track still silences it).
@@ -108,8 +128,15 @@ Source lives in `src/`:
   Deliberately mimics the real ZSPU rather than doing generic MIDI/soundfont playback (see
   `zcpu-notes/docs/HLZASM.md`'s "SPU audio model" section for why): one `OscillatorNode` per
   track/channel, its `type` set from that track's `WaveformId` (square→`"square"`, saw→
-  `"sawtooth"`, tri→`"triangle"`, sine→`"sine"` — Web Audio's 4 built-in types map 1:1), frequency
-  = `880 * clamp(2^(note/12), 0, 255) / 100` — reproducing the generator's actual `CHPITCH` math
+  `"sawtooth"`, tri→`"triangle"`, sine→`"sine"` — Web Audio's 4 built-in types map 1:1) — **except
+  `"noise"`** (the percussion default), which uses an `AudioBufferSourceNode` looping a generated
+  white-noise buffer instead (Web Audio has no built-in noise oscillator type; this is an
+  approximation of the real `synth/pink_noise.wav`, not an exact match, fine for preview purposes).
+  Frequency/pitch math is shared either way, just applied to a different `AudioParam`:
+  `OscillatorNode.frequency` is absolute Hz (needs `BASE_FREQUENCY`);
+  `AudioBufferSourceNode.playbackRate` is already a direct multiplier (1 = normal speed), so noise
+  tracks skip the `BASE_FREQUENCY` multiplication entirely. The pitch percentage itself —
+  `clamp(2^(note/12), 0, 255) / 100` — reproduces the generator's actual `CHPITCH` math
   exactly (GMod's `Sound:ChangePitch` treats its argument as a percentage of normal speed, 100 =
   unshifted; the generator's own `/100` before calling `CHPITCH` and `CHPITCH`'s internal `*100`
   cancel out, leaving `clamp(2^(note/12), 0, 255)` as that percentage — an earlier version of this
@@ -132,9 +159,12 @@ Source lives in `src/`:
 - **`pianoRoll.ts`** — `PianoRoll`, the note editor. Takes a `Song` and a container element;
   renders (and owns all interaction for) a track sidebar and a scrollable step/pitch grid that
   shows **every audible track simultaneously** (not just the selected one — each gets a distinct
-  color, cycling through `TRACK_COLORS` by track index), plus the currently-selected ("active")
-  track always shown too even if it's muted, so you can still see/edit what you're deciding
-  whether to keep. The active track's blocks render at full opacity with a note-name label and on
+  color, one evenly-spaced HSL hue per track index up to `TRACK_COLOR_COUNT` = 32, matching
+  `WireSPU_MaxChannels` so no two tracks in a fully-mappable file share a color), plus the
+  currently-selected ("active") track always shown too even if it's muted, so you can still
+  see/edit what you're deciding whether to keep. A percussion track (`song.isPercussion[i]`) gets
+  a fixed neutral gray (`PERCUSSION_COLOR`) instead of a hue, and `" (drums)"` appended to its
+  sidebar label. The active track's blocks render at full opacity with a note-name label and on
   top (`.active-track-block` in `app.css`); every other visible track renders dimmed
   (`opacity: 0.4`) as background context, unlabeled. **Editing always targets only the active
   track** regardless of how many others are visually overlaid — no ambiguity about which track a

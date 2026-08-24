@@ -16,16 +16,22 @@ const DEFAULT_MICROSECONDS_PER_BEAT = 500000;
 
 /* General MIDI's percussion channel is channel 10 in 1-indexed MIDI terms,
    which is index 9 here since event.channel is 0-indexed (eventTypeByte & 0x0f). */
-const PERCUSSION_CHANNEL = 9;
+export const PERCUSSION_CHANNEL = 9;
 
-/* The 4 waveform slots the SPU preloads on reset (VM:Reset() in cl_spuvm.lua) - the only
-   waveforms guaranteed to exist without a custom sound resource. */
-export type WaveformId = "square" | "saw" | "tri" | "sine";
+/* Real Wiremod synth/ resources, confirmed against the in-game sound browser. Per the user,
+   prefer the plain unprefixed files for simplicity - square/saw/tri/sine all have one
+   (synth/tri.wav is real; also-present "_440"/"_880"/"_1760" suffixed variants of every waveform
+   are precisely pitched to that exact Hz, but aren't used here since a plain option exists for
+   all four). Native pitch of these plain files is therefore unverified/unknown - see
+   BASE_FREQUENCY's comment in player.ts. "noise" (pink_noise.wav) has no real pitch, used as the
+   default for percussion tracks - see isPercussion in processing.ts. */
+export type WaveformId = "square" | "saw" | "tri" | "sine" | "noise";
 export const WAVEFORM_PATHS: Record<WaveformId, string> = {
     square: "synth/square.wav",
     saw: "synth/saw.wav",
     tri: "synth/tri.wav",
     sine: "synth/sine.wav",
+    noise: "synth/pink_noise.wav",
 };
 
 function getTempo(midi: Midifile) {
@@ -38,10 +44,12 @@ function getTempo(midi: Midifile) {
 
 function getnotes(midi: Midifile) {
     let notes: number[][] = [];
+    let isPercussion: boolean[] = [];
     for (let i = 0; i < midi.tracks.length; i++) {
         let track: number[] = [];
         let currentNote = -1;
         let fractionalSteps = 0;
+        let hasPercussionEvent = false;
         for (let midievent of midi.tracks[i]) {
             if (midievent.deltaTime > 0) {
                 fractionalSteps += (midievent.deltaTime / midi.header.ticksPerBeat) * STEPS_PER_BEAT;
@@ -52,6 +60,7 @@ function getnotes(midi: Midifile) {
                 }
             }
             if (midievent.channel === PERCUSSION_CHANNEL) {
+                hasPercussionEvent = true;
                 continue;
             }
             if (midievent.subtype === "noteOn") {
@@ -62,9 +71,10 @@ function getnotes(midi: Midifile) {
         }
         if (track.length > 0) {
             notes.push(track);
+            isPercussion.push(hasPercussionEvent);
         }
     }
-    return notes;
+    return {tracks: notes, isPercussion};
 }
 
 function createWaveChannelBlocks(volumes:number[]) {
@@ -80,14 +90,30 @@ function createWaveChannelBlocks(volumes:number[]) {
     return baseblock;
 }
 
+/* Collapses a per-step array into flat [note,count, note,count, ...] run-length pairs. Most held
+   notes span many consecutive steps at STEPS_PER_BEAT quantization, so this compresses heavily
+   (measured 7-9x on real songs) - see constructLoopBlocks for how the generated script decodes
+   this back into a per-tick note value. */
+function encodeRuns(track: number[]): number[] {
+    let pairs: number[] = [];
+    let i = 0;
+    while (i < track.length) {
+        let note = track[i];
+        let count = 1;
+        while (i + count < track.length && track[i + count] === note) {
+            count++;
+        }
+        pairs.push(note, count);
+        i += count;
+    }
+    return pairs;
+}
+
 function createDbLines(notes:number[][]) {
-    /* The generated main() loop shares one index `i` across every track, counting up to
-       tracklen = strlen(the longest track) - see constructBodyOfFile. A track's own `db 0;`
-       terminator only marks where strlen() should stop counting; it does NOT stop the shared
-       loop from reading trackN[i] past that point. Without padding, a track shorter than
-       tracklen reads straight through into whatever memory comes after its own declared data -
-       the next track's real note values, misread as this track's continuing melody. Padding every
-       track to the same length with -1 (silence) makes every trackN[i] for i < tracklen valid. */
+    /* Every track is padded to the same total duration (with -1/silence) before encoding so the
+       whole ensemble loops together in sync, rather than each track wrapping back to its own
+       start at a different real time - see constructLoopBlocks for how each track's own
+       independent decode state uses this. */
     let maxLength = Math.max(0, ...notes.map(track => track.length));
     let paddedNotes = notes.map(track => {
         let padded = track.slice();
@@ -99,48 +125,54 @@ function createDbLines(notes:number[][]) {
 
     let dblines:string[][] = [];
     for (let notetracknum = 0; notetracknum < paddedNotes.length; notetracknum++) {
+        let pairs = encodeRuns(paddedNotes[notetracknum]);
         dblines[notetracknum] = [];
         dblines[notetracknum].push(`track${notetracknum}:\n`);
-        while (paddedNotes[notetracknum].length) {
-            dblines[notetracknum].push("db ".concat(paddedNotes[notetracknum].splice(0, 32).join(', ')).concat(";\n"));
+        while (pairs.length) {
+            dblines[notetracknum].push("db ".concat(pairs.splice(0, 32).join(', ')).concat(";\n"));
         }
         dblines[notetracknum].push("db 0; // End string\n");
     }
     return dblines;
 }
+
+/* Each track decodes its own run-length pairs independently: while the current run still has
+   ticks remaining, just hold noteN; once it runs out, read the next [note,count] pair (wrapping
+   to the start of its own array at its own tracklenN) and start counting that one down. This
+   replaces the old flat shared-index model (trackN[i], one shared i across every track) - RLE
+   pairs mean different tracks are independently partway through different-length runs at any
+   given tick, so there's no single shared index that still makes sense. */
 function constructLoopBlocks(needed:number) {
     let noteblocks:string[] = [];
-    noteblocks.push("    // Track 0\n");
-    noteblocks.push("note = 2;\n");
-    noteblocks.push("fpwr note,(track0[i]/12);\n");
-    noteblocks.push("note /= 100;\n");
-    noteblocks.push("chpitch 0,note;\n");
-    noteblocks.push("\n");
-    if (needed > 1) {
-        for (let i = 1; i < needed; i++) {
-            noteblocks.push("    // Track " + i + "\n");
-            noteblocks.push("note = 2;\n");
-            noteblocks.push("fpwr note,(track" + i + "[i]/12);\n");
-            noteblocks.push("note /= 100;\n");
-            noteblocks.push("chpitch " + i + ",note;\n");
-            noteblocks.push("\n");
-        }
+    for (let i = 0; i < needed; i++) {
+        noteblocks.push("    // Track " + i + "\n");
+        noteblocks.push("if (remain" + i + " <= 0) {\n");
+        noteblocks.push("    note" + i + " = track" + i + "[idx" + i + "];\n");
+        noteblocks.push("    remain" + i + " = track" + i + "[idx" + i + "+1];\n");
+        noteblocks.push("    idx" + i + " += 2;\n");
+        noteblocks.push("    if (idx" + i + " >= tracklen" + i + ") { idx" + i + " = 0; }\n");
+        noteblocks.push("}\n");
+        noteblocks.push("remain" + i + " -= 1;\n");
+        noteblocks.push("note = 2;\n");
+        noteblocks.push("fpwr note,(note" + i + "/12);\n");
+        noteblocks.push("note /= 100;\n");
+        noteblocks.push("chpitch " + i + ",note;\n");
+        noteblocks.push("\n");
     }
     return noteblocks;
 }
-function constructBodyOfFile(numberOfTracks:number, longesttrack:number, tempo:number, waveforms:WaveformId[]) {
+function constructBodyOfFile(numberOfTracks:number, tempo:number, waveforms:WaveformId[]) {
     let file:string[] = [];
-    file.push("// Get track length\n");
-    file.push("tracklen = strlen(track" + longesttrack + ");\n");
+    file.push("// Get track lengths\n");
+    for (let i = 0; i < numberOfTracks; i++) {
+        file.push("tracklen" + i + " = strlen(track" + i + ");\n");
+    }
     file.push("\n");
     file.push("void main()\n");
     file.push("{\n");
     file.push("    tempo(" + tempo + ")\n");
     file.push("\n");
     file = file.concat(constructLoopBlocks(numberOfTracks));
-    file.push("    // Index\n");
-    file.push("i++; mod i,tracklen;\n");
-    file.push("\n");
     file.push("    // Repeat\n");
     file.push("jmp main;\n");
     file.push("}\n");
@@ -160,8 +192,10 @@ function constructBodyOfFile(numberOfTracks:number, longesttrack:number, tempo:n
     file.push("  return (strptr - str);\n");
     file.push("}\n");
     file.push("\n");
-    file.push("float note, i;\n");
-    file.push("float tracklen;\n");
+    file.push("float note;\n");
+    for (let i = 0; i < numberOfTracks; i++) {
+        file.push("float note" + i + ", idx" + i + ", remain" + i + ", tracklen" + i + ";\n");
+    }
     file.push("float time, timestamp;\n");
     file.push("\n");
     for (let i = 0; i < waveforms.length; i++) {
@@ -171,14 +205,8 @@ function constructBodyOfFile(numberOfTracks:number, longesttrack:number, tempo:n
     return file;
 }
 function createFileString(dblinesin:string[][], tempo:number, waveforms:WaveformId[], volumes:number[]) {
-    let longestTrack = dblinesin.map(function (a) {
-        return a.length;
-    }).indexOf(Math.max.apply(Math, dblinesin.map(function (a) {
-        return a.length;
-    })));
     let file = createWaveChannelBlocks(volumes);
-    file = file.concat(constructBodyOfFile(dblinesin.length, longestTrack, tempo, waveforms));
-    //file.concat(require("fs").readFileSync("header.txt", 'utf8'));
+    file = file.concat(constructBodyOfFile(dblinesin.length, tempo, waveforms));
     for (let dbline of dblinesin) {
         file = file.concat(dbline);
         file.push("\n");

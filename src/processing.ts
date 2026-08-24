@@ -8,6 +8,7 @@ export interface Song {
     volumes: number[];
     muted: boolean[];
     solo: boolean[];
+    isPercussion: boolean[];
 }
 
 const DEFAULT_VOLUME = 0.5;
@@ -15,12 +16,12 @@ const DEFAULT_VOLUME = 0.5;
 export function loadMidi(midi: ArrayBuffer): Song {
     let midicontent = new Midifile(midi);
     let tempo = GetTempo(midicontent);
-    let tracks = getnotes(midicontent);
-    let waveforms: WaveformId[] = tracks.map(() => "sine");
+    let {tracks, isPercussion} = getnotes(midicontent);
+    let waveforms: WaveformId[] = tracks.map((_, i) => isPercussion[i] ? "noise" : "sine");
     let volumes: number[] = tracks.map(() => DEFAULT_VOLUME);
     let muted: boolean[] = tracks.map(() => false);
     let solo: boolean[] = tracks.map(() => false);
-    return {tracks, tempo, waveforms, volumes, muted, solo};
+    return {tracks, tempo, waveforms, volumes, muted, solo, isPercussion};
 }
 
 /* A track is audible (plays back / exports) if it isn't muted, and - if any track is soloed -
@@ -44,6 +45,7 @@ export function getAudibleSong(song: Song): Song {
         volumes: audibleIndexes.map(i => song.volumes[i]),
         muted: audibleIndexes.map(() => false),
         solo: audibleIndexes.map(() => false),
+        isPercussion: audibleIndexes.map(i => song.isPercussion[i]),
     };
 }
 

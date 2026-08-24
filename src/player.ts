@@ -1,21 +1,24 @@
-/* Faithful preview of what the ZSPU will actually play: one oscillator per channel (waveform
+/* Faithful preview of what the ZSPU will actually play: one sound source per channel (waveform
    matching the track's chosen synth wave), hard on/off steps (the generator never sets an ADSR
    envelope). Pitch reproduces the generator's actual CHPITCH math: the generated script computes
    X = 2^(note/12)/100, and CHPITCH's Lua implementation does ChangePitch(clamp(X*100, 0, 255), 0)
    - GMod's ChangePitch treats 100 as normal/unshifted speed, so the real playback-rate multiplier
-   is clamp(2^(note/12), 0, 255) / 100, applied to the base sample's native pitch.
+   is clamp(2^(note/12), 0, 255) / 100.
 
-   Known unverified assumption: BASE_FREQUENCY=880 was chosen because the generator's old shared
-   waveform was literally named "sine_880.wav". The 4 real built-in SPU waveforms (synth/square.wav
-   etc, no frequency in the filename) have an unknown native pitch - kept at 880 for all four as a
-   working assumption; worth a real in-game check, not fixed blind without the actual asset files. */
+   Known unverified assumption: BASE_FREQUENCY=880 was chosen because this project's original
+   shared waveform was literally named "sine_880.wav". WAVEFORM_PATHS (utilityfunctions.ts) now
+   uses the plain unprefixed synth/{square,saw,tri,sine}.wav files (per the user, preferred for
+   simplicity over the precisely-pitched "_440"/"_880"/"_1760" variants confirmed to exist for
+   every waveform in the real in-game sound browser) - their actual native pitch is unknown, not
+   verified against the real asset files. Worth a real in-game check. */
 
 import {WaveformId} from "./utilityfunctions";
 
 const BASE_FREQUENCY = 880;
 const MAX_PITCH_PERCENT = 255;
+const NOISE_BUFFER_SECONDS = 2;
 
-const OSCILLATOR_TYPES: Record<WaveformId, OscillatorType> = {
+const OSCILLATOR_TYPES: Partial<Record<WaveformId, OscillatorType>> = {
     square: "square",
     saw: "sawtooth",
     tri: "triangle",
@@ -29,9 +32,10 @@ class ZspuPlayer {
     private volumes: number[];
     private audioContext: AudioContext | null = null;
     private masterGain: GainNode | null = null;
+    private noiseBuffer: AudioBuffer | null = null;
     private trackScaling: number;
     private volume = 0.5;
-    private oscillators: OscillatorNode[] = [];
+    private sources: AudioScheduledSourceNode[] = [];
     private endTimeout: number | null = null;
     private playStartTime: number | null = null;
     private secondsPerStep = 0;
@@ -52,6 +56,23 @@ class ZspuPlayer {
             this.masterGain.connect(audioContext.destination);
         }
         return this.masterGain;
+    }
+
+    /* Web Audio has no built-in "noise" OscillatorType, so percussion-style tracks (WaveformId
+       "noise", matching synth/pink_noise.wav) instead loop a buffer of generated white noise -
+       an approximation of the real pink-noise sample, not an exact match, good enough for preview
+       purposes. Cached per AudioContext (lazily built once, reused across replays). */
+    private getNoiseBuffer(audioContext: AudioContext): AudioBuffer {
+        if (!this.noiseBuffer) {
+            const length = Math.floor(audioContext.sampleRate * NOISE_BUFFER_SECONDS);
+            const buffer = audioContext.createBuffer(1, length, audioContext.sampleRate);
+            const data = buffer.getChannelData(0);
+            for (let i = 0; i < length; i++) {
+                data[i] = Math.random() * 2 - 1;
+            }
+            this.noiseBuffer = buffer;
+        }
+        return this.noiseBuffer;
     }
 
     setVolume(volume: number) {
@@ -77,8 +98,24 @@ class ZspuPlayer {
         for (let trackIndex = 0; trackIndex < this.tracks.length; trackIndex++) {
             const track = this.tracks[trackIndex];
             const trackVolume = this.volumes[trackIndex] ?? 1;
-            const oscillator = audioContext.createOscillator();
-            oscillator.type = OSCILLATOR_TYPES[this.waveforms[trackIndex] ?? "sine"];
+            const waveform = this.waveforms[trackIndex] ?? "sine";
+            const isNoise = waveform === "noise";
+
+            let source: AudioScheduledSourceNode;
+            let pitchParam: AudioParam;
+            if (isNoise) {
+                const bufferSource = audioContext.createBufferSource();
+                bufferSource.buffer = this.getNoiseBuffer(audioContext);
+                bufferSource.loop = true;
+                source = bufferSource;
+                pitchParam = bufferSource.playbackRate;
+            } else {
+                const oscillator = audioContext.createOscillator();
+                oscillator.type = OSCILLATOR_TYPES[waveform] ?? "sine";
+                source = oscillator;
+                pitchParam = oscillator.frequency;
+            }
+
             const gain = audioContext.createGain();
             gain.gain.setValueAtTime(0, startTime);
 
@@ -89,21 +126,23 @@ class ZspuPlayer {
                     gain.gain.setValueAtTime(0, t);
                 } else {
                     const pitchPercent = Math.min(MAX_PITCH_PERCENT, Math.pow(2, note / 12));
-                    oscillator.frequency.setValueAtTime(BASE_FREQUENCY * pitchPercent / 100, t);
+                    // OscillatorNode.frequency is an absolute Hz value (needs BASE_FREQUENCY);
+                    // AudioBufferSourceNode.playbackRate is already a direct multiplier (1 = normal).
+                    pitchParam.setValueAtTime(isNoise ? pitchPercent / 100 : BASE_FREQUENCY * pitchPercent / 100, t);
                     gain.gain.setValueAtTime(trackVolume, t);
                 }
             }
 
-            oscillator.connect(gain);
+            source.connect(gain);
             gain.connect(masterGain);
-            oscillator.start(startTime);
-            oscillator.stop(startTime + duration);
-            this.oscillators.push(oscillator);
+            source.start(startTime);
+            source.stop(startTime + duration);
+            this.sources.push(source);
         }
 
         this.endTimeout = window.setTimeout(() => {
             this.endTimeout = null;
-            this.oscillators = [];
+            this.sources = [];
             this.onEnded?.();
         }, (startTime - audioContext.currentTime + duration) * 1000);
     }
@@ -113,11 +152,11 @@ class ZspuPlayer {
             window.clearTimeout(this.endTimeout);
             this.endTimeout = null;
         }
-        for (const oscillator of this.oscillators) {
-            oscillator.stop();
-            oscillator.disconnect();
+        for (const source of this.sources) {
+            source.stop();
+            source.disconnect();
         }
-        this.oscillators = [];
+        this.sources = [];
         this.playStartTime = null;
     }
 
