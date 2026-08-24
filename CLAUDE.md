@@ -57,8 +57,12 @@ Source lives in `src/`:
     steps via `ticksPerBeat`/`STEPS_PER_BEAT`, produces one array entry per output step — holding
     the currently-sounding note (or `-1` for silence) across however many steps elapsed before the
     next event. This is what encodes real note duration and rests into the output, not just a
-    per-event dump. Percussion-channel (index 9, i.e. GM channel 10) events don't change the held
-    note but their elapsed time still counts. `STEPS_PER_BEAT` must stay in sync between this
+    per-event dump. Percussion-channel (index 9, i.e. GM channel 10) events are treated like any
+    other track's notes (held note set on noteOn, cleared on noteOff, reusing the raw GM drum note
+    number as the "pitch") — this used to `continue` past percussion noteOn/noteOff entirely,
+    silently exporting/playing pure-percussion tracks as one long rest, until a real file
+    (`Rainbow Tylenol.mid`) whose drums were the only thing sounding during long melodic rests
+    made the resulting silence obvious. `STEPS_PER_BEAT` must stay in sync between this
     function and `GetTempo` — it's the shared time resolution both assume, and also what the piano
     roll editor's grid columns are quantized to.
   - `WaveformId`/`WAVEFORM_PATHS` — square/saw/tri/sine/noise mapped to their `synth/*.wav`
@@ -107,10 +111,8 @@ Source lives in `src/`:
     sync with `getnotes()`'s own empty-track filtering).
   - `loadMidi(buffer): Song` — parses + calls `getnotes()`, defaults every track to volume `0.5`,
     unmuted, not soloed, and waveform `"sine"` — except percussion tracks (`isPercussion[i]`),
-    which default to `"noise"` instead (a real user-editable default, not automatic behavior:
-    percussion-channel MIDI events are still skipped entirely by `getnotes()`, so a percussion
-    track's note data starts out empty/silent regardless of its waveform, unless notes are
-    manually painted onto it in the piano roll).
+    which default to `"noise"` instead (a real user-editable default; percussion note data is real
+    now too, since `getnotes()` no longer skips percussion-channel noteOn/noteOff events).
   - `isTrackAudible(song, index)` — a track counts as audible (plays/exports) if it isn't muted,
     and — if *any* track has `solo` set — it's one of the soloed ones. Explicit mute always beats
     solo (standard DAW convention: muting a soloed track still silences it).
