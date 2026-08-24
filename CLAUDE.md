@@ -74,10 +74,14 @@ Source lives in `src/`, six files:
   quantized note arrays and tempo (for `player.ts`) alongside the finished script text (for
   `download.ts`). Note: `CreateDBLines` mutates its input via `.splice`, so `convertMidi` passes it
   a cloned copy of `tracks` (`tracks.map(t => t.slice())`) rather than the array it returns.
-- **`app.ts`** — the only DOM-facing code. On `window.onload`, wires the `#file` `<input>`'s
-  `change` event to read the selected file via `file.arrayBuffer()` and call `convertMidi`, then
-  reveals a `#controls` block (`#play`/`#stop`/`#download` buttons, hidden until a file is loaded)
-  wired to `ZspuPlayer` and `downloadTextFile` respectively.
+- **`app.ts`** — the only DOM-facing code. Both the `#file` `<input>`'s `change` event and
+  drag-and-drop onto `#dropzone` (dragover/dragleave toggle a `.dragover` CSS class for visual
+  feedback; drop reads `evt.dataTransfer.files[0]`) funnel into one shared `loadFile(file: File)`
+  helper that reads it via `file.arrayBuffer()` and calls `convertMidi`, then reveals a
+  `#controls` block (`#play`/`#stop`/`#download` buttons, hidden until a file is loaded) wired to
+  `ZspuPlayer` and `downloadTextFile` respectively. A `window`-level `dragover`/`drop` listener
+  pair calls `preventDefault()` so a drop outside `#dropzone` doesn't navigate the page away to
+  the dropped file.
 
 When changing the generated ZSPU script format, `constructBodyOfFile` and `constructLoopBlocks` in
 `utilityfunctions.ts` are the two functions that hand-emit the ZSPU source text — the ZSPU

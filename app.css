@@ -5,3 +5,19 @@
 span {
     font-style: italic;
 }
+
+#dropzone {
+    margin-top: 8px;
+    padding: 24px;
+    border: 2px dashed #999;
+    border-radius: 6px;
+    max-width: 320px;
+    text-align: center;
+    color: #666;
+}
+
+#dropzone.dragover {
+    border-color: #333;
+    color: #333;
+    background: #f0f0f0;
+}

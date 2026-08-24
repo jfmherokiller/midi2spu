@@ -4,6 +4,7 @@ import {ZspuPlayer} from "./player"
 
 window.onload = () => {
     const fileInput = document.getElementById("file")! as HTMLInputElement;
+    const dropzone = document.getElementById("dropzone")!;
     const controls = document.getElementById("controls")!;
     const playButton = document.getElementById("play")! as HTMLButtonElement;
     const stopButton = document.getElementById("stop")! as HTMLButtonElement;
@@ -17,10 +18,7 @@ window.onload = () => {
         stopButton.disabled = !playing;
     }
 
-    fileInput.addEventListener("change", async () => {
-        const file = fileInput.files?.[0];
-        if (!file) return;
-
+    async function loadFile(file: File) {
         player?.stop();
         setPlaying(false);
 
@@ -30,6 +28,29 @@ window.onload = () => {
         player.onEnded = () => setPlaying(false);
 
         controls.style.display = "";
+    }
+
+    fileInput.addEventListener("change", () => {
+        const file = fileInput.files?.[0];
+        if (file) loadFile(file);
+    });
+
+    // Prevent stray drops anywhere on the page from navigating away to the dropped file.
+    window.addEventListener("dragover", evt => evt.preventDefault());
+    window.addEventListener("drop", evt => evt.preventDefault());
+
+    dropzone.addEventListener("dragover", evt => {
+        evt.preventDefault();
+        dropzone.classList.add("dragover");
+    });
+    dropzone.addEventListener("dragleave", () => {
+        dropzone.classList.remove("dragover");
+    });
+    dropzone.addEventListener("drop", evt => {
+        evt.preventDefault();
+        dropzone.classList.remove("dragover");
+        const file = evt.dataTransfer?.files?.[0];
+        if (file) loadFile(file);
     });
 
     playButton.addEventListener("click", () => {
