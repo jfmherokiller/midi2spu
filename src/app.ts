@@ -9,6 +9,7 @@ window.onload = () => {
     const playButton = document.getElementById("play")! as HTMLButtonElement;
     const stopButton = document.getElementById("stop")! as HTMLButtonElement;
     const downloadButton = document.getElementById("download")! as HTMLButtonElement;
+    const volumeSlider = document.getElementById("volume")! as HTMLInputElement;
 
     let result: ConversionResult | null = null;
     let player: ZspuPlayer | null = null;
@@ -26,9 +27,14 @@ window.onload = () => {
         result = convertMidi(buffer);
         player = new ZspuPlayer(result.tracks, result.tempo);
         player.onEnded = () => setPlaying(false);
+        player.setVolume(volumeSlider.valueAsNumber);
 
         controls.style.display = "";
     }
+
+    volumeSlider.addEventListener("input", () => {
+        player?.setVolume(volumeSlider.valueAsNumber);
+    });
 
     fileInput.addEventListener("change", () => {
         const file = fileInput.files?.[0];

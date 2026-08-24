@@ -61,14 +61,21 @@ Source lives in `src/`, six files:
   Blob + `URL.createObjectURL` + `<a download>` helper. The project has no runtime dependencies.
 - **`player.ts`** — `ZspuPlayer`, a Web Audio playback engine for the "Play preview" button.
   Deliberately mimics the real ZSPU rather than doing generic MIDI/soundfont playback (see
-  `zcpu-notes/docs/HLZASM.md`'s "SPU audio model" section for why): one plain sine `OscillatorNode` per
-  track/channel, frequency = `880 * 2^(note/12)` matching the generator's `CHPITCH` ratio and its
-  `synth/sine_880.wav` base sample, hard on/off steps (no ADSR, matching the generator never
-  calling `CHADSR`). Plays the *converted/quantized* note arrays (`getnotes()`'s output — literally
-  what ends up in the downloaded script), not the raw MIDI, so the preview matches the actual
-  output including its quirks (e.g. the pitch formula's lack of a reference-pitch offset). All
-  playback is scheduled up front via `AudioParam.setValueAtTime` at construction time, not driven
-  by JS timers, for accurate timing. One-shot (not looping like the real ZSPU's `main()` does).
+  `zcpu-notes/docs/HLZASM.md`'s "SPU audio model" section for why): one plain sine `OscillatorNode`
+  per track/channel, frequency = `880 * clamp(2^(note/12), 0, 255) / 100` — reproducing the
+  generator's actual `CHPITCH` math exactly (GMod's `Sound:ChangePitch` treats its argument as a
+  percentage of normal speed, 100 = unshifted; the generator's own `/100` before calling `CHPITCH`
+  and `CHPITCH`'s internal `*100` cancel out, leaving `clamp(2^(note/12), 0, 255)` as that
+  percentage). An earlier version of this file (and the one in `zcpu-notes/docs/HLZASM.md`) had
+  this wrong — dropped the `/100` entirely, so every note played ~100x too fast/high (middle C at
+  ~28kHz instead of ~280Hz). Hard on/off steps (no ADSR, matching the generator never calling
+  `CHADSR`), volume adjustable via `setVolume(0-1)` (wired to the "Volume" slider — applies to a
+  persistent master `GainNode`, separate from the per-track on/off gain nodes, so it can change
+  live during playback). Plays the *converted/quantized* note arrays (`getnotes()`'s output —
+  literally what ends up in the downloaded script), not the raw MIDI, so the preview matches the
+  actual output. All pitch/gain automation is scheduled up front via `AudioParam.setValueAtTime`
+  at construction time, not driven by JS timers, for accurate timing. One-shot (not looping like
+  the real ZSPU's `main()` does).
 - **`processing.ts`** — `convertMidi(midi: ArrayBuffer): ConversionResult` runs the parse → tempo →
   notes → db-lines → file-string pipeline and returns `{tracks, tempo, scriptText}` — the raw
   quantized note arrays and tempo (for `player.ts`) alongside the finished script text (for
