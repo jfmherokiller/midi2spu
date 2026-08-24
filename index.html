@@ -9,6 +9,11 @@
 <body>
     <h1>Select your midi file</h1>
     <input type="file" id="file" name="file" enctype="multipart/form-data" />
+    <div id="controls" style="display:none">
+        <button id="play">Play preview</button>
+        <button id="stop" disabled>Stop</button>
+        <button id="download">Download .txt</button>
+    </div>
     <script type="module" src="/src/app.ts"></script>
 </body>
 </html>

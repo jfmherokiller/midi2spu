@@ -1,12 +1,17 @@
-﻿import {Midifile} from "./MidiFile";
+import {Midifile} from "./MidiFile";
 import {getnotes, CreateDBLines, GetTempo, CreateFileString} from "./utilityfunctions";
-import {downloadTextFile} from "./download";
 
-function parsethefile(midi: ArrayBuffer) {
+export interface ConversionResult {
+    tracks: number[][];
+    tempo: number;
+    scriptText: string;
+}
+
+export function convertMidi(midi: ArrayBuffer): ConversionResult {
     let midicontent = new Midifile(midi);
     let tempo = GetTempo(midicontent);
-    let dblines: string[][] = CreateDBLines(getnotes(midicontent));
+    let tracks = getnotes(midicontent);
+    let dblines: string[][] = CreateDBLines(tracks.map(track => track.slice()));
     let file = CreateFileString(dblines, tempo);
-    downloadTextFile(file.join(""), "songtest.txt", "text/plain");
+    return {tracks, tempo, scriptText: file.join("")};
 }
-export {parsethefile}
