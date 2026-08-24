@@ -3,6 +3,7 @@
   "name": "midi2spu",
   "private": true,
   "version": "1.0.0",
+  "type": "module",
   "repository": {
     "type": "git",
     "url": "https://github.com/jfmherokiller/midi2spu.git"
