@@ -30,7 +30,7 @@ npm run preview   # serve the dist/ build locally
 
 ## Architecture
 
-Source lives in `src/`, five files:
+Source lives in `src/`, six files:
 
 - **`MidiFile.ts`** — standalone MIDI file parser. Takes the raw `ArrayBuffer` of an uploaded
   `.mid` file (read via `FileReader.readAsArrayBuffer`) and parses it with a `ByteStream` class
@@ -59,12 +59,25 @@ Source lives in `src/`, five files:
     native one), and finally the `db` data blocks from `CreateDBLines`.
 - **`download.ts`** — `downloadTextFile(content, filename, mimeType)`, a small native
   Blob + `URL.createObjectURL` + `<a download>` helper. The project has no runtime dependencies.
-- **`processing.ts`** — glue: `parsethefile(midi: ArrayBuffer)` runs the parse → tempo → notes →
-  db-lines → file-string pipeline above and calls `downloadTextFile` to save the result as
-  `songtest.txt`.
+- **`player.ts`** — `ZspuPlayer`, a Web Audio playback engine for the "Play preview" button.
+  Deliberately mimics the real ZSPU rather than doing generic MIDI/soundfont playback (see
+  `docs/HLZASM.md`'s "SPU audio model" section for why): one plain sine `OscillatorNode` per
+  track/channel, frequency = `880 * 2^(note/12)` matching the generator's `CHPITCH` ratio and its
+  `synth/sine_880.wav` base sample, hard on/off steps (no ADSR, matching the generator never
+  calling `CHADSR`). Plays the *converted/quantized* note arrays (`getnotes()`'s output — literally
+  what ends up in the downloaded script), not the raw MIDI, so the preview matches the actual
+  output including its quirks (e.g. the pitch formula's lack of a reference-pitch offset). All
+  playback is scheduled up front via `AudioParam.setValueAtTime` at construction time, not driven
+  by JS timers, for accurate timing. One-shot (not looping like the real ZSPU's `main()` does).
+- **`processing.ts`** — `convertMidi(midi: ArrayBuffer): ConversionResult` runs the parse → tempo →
+  notes → db-lines → file-string pipeline and returns `{tracks, tempo, scriptText}` — the raw
+  quantized note arrays and tempo (for `player.ts`) alongside the finished script text (for
+  `download.ts`). Note: `CreateDBLines` mutates its input via `.splice`, so `convertMidi` passes it
+  a cloned copy of `tracks` (`tracks.map(t => t.slice())`) rather than the array it returns.
 - **`app.ts`** — the only DOM-facing code. On `window.onload`, wires the `#file` `<input>`'s
-  `change` event to read the selected file via `readAsArrayBuffer` and hand the result to
-  `parsethefile`.
+  `change` event to read the selected file via `file.arrayBuffer()` and call `convertMidi`, then
+  reveals a `#controls` block (`#play`/`#stop`/`#download` buttons, hidden until a file is loaded)
+  wired to `ZspuPlayer` and `downloadTextFile` respectively.
 
 When changing the generated ZSPU script format, `constructBodyOfFile` and `constructLoopBlocks` in
 `utilityfunctions.ts` are the two functions that hand-emit the ZSPU source text — the ZSPU
@@ -74,7 +87,8 @@ implemented here, only text-generated as a target format for the Lua entity link
 called HLZASM, not "ZSPU bytecode" — that doc has the full opcode tables and syntax rules, sourced
 directly from the Wiremod `wire` addon's compiler and VM source).
 
-There is no in-browser playback/preview of the uploaded MIDI file — the original `index.html` did
-load an external `midi.js` script (almost certainly the mudcube/MIDI.js soundfont-playback
-library, given the filename), but nothing in `src/` ever referenced it, so it was dead and was
-removed. If browser playback is wanted, it'd need to be added from scratch as a new feature.
+In-browser playback (`player.ts`, above) replaces the original `index.html`'s dead external
+`midi.js` `<script>` tag (removed during the earlier modernization pass — almost certainly the
+mudcube/MIDI.js soundfont library, going by the filename, but nothing in `src/` ever referenced
+it). There is currently no in-browser *editing* of the note data before conversion/playback —
+raised as a possible future feature but explicitly out of scope so far.
