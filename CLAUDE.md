@@ -70,3 +70,8 @@ When changing the generated ZSPU script format, `constructBodyOfFile` and `const
 `utilityfunctions.ts` are the two functions that hand-emit the ZSPU source text — the ZSPU
 language itself (`fpwr`, `chpitch`, `wset`, `chwave`, `chvolume`, `chstart`, `timer`, etc.) is not
 implemented here, only text-generated as a target format for the Lua entity linked above.
+
+There is no in-browser playback/preview of the uploaded MIDI file — the original `index.html` did
+load an external `midi.js` script (almost certainly the mudcube/MIDI.js soundfont-playback
+library, given the filename), but nothing in `src/` ever referenced it, so it was dead and was
+removed. If browser playback is wanted, it'd need to be added from scratch as a new feature.
