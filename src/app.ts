@@ -9,6 +9,7 @@ window.onload = () => {
     const playButton = document.getElementById("play")! as HTMLButtonElement;
     const stopButton = document.getElementById("stop")! as HTMLButtonElement;
     const downloadButton = document.getElementById("download")! as HTMLButtonElement;
+    const copyButton = document.getElementById("copy")! as HTMLButtonElement;
     const volumeSlider = document.getElementById("volume")! as HTMLInputElement;
 
     let result: ConversionResult | null = null;
@@ -73,5 +74,15 @@ window.onload = () => {
     downloadButton.addEventListener("click", () => {
         if (!result) return;
         downloadTextFile(result.scriptText, "songtest.txt", "text/plain");
+    });
+
+    copyButton.addEventListener("click", async () => {
+        if (!result) return;
+        await navigator.clipboard.writeText(result.scriptText);
+        const originalText = copyButton.textContent;
+        copyButton.textContent = "Copied!";
+        setTimeout(() => {
+            copyButton.textContent = originalText;
+        }, 1200);
     });
 };
