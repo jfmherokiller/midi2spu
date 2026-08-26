@@ -1,6 +1,6 @@
 import "xp.css/dist/XP.css"
 import {loadMidi, generateScript, getAudibleSong, Song} from "./processing"
-import {downloadTextFile} from "./download"
+import {downloadTextFile, downloadBlob} from "./download"
 import {ZspuPlayer} from "./player"
 import {PianoRoll} from "./pianoRoll"
 
@@ -12,6 +12,7 @@ window.onload = () => {
     const stopButton = document.getElementById("stop")! as HTMLButtonElement;
     const downloadButton = document.getElementById("download")! as HTMLButtonElement;
     const copyButton = document.getElementById("copy")! as HTMLButtonElement;
+    const exportWavButton = document.getElementById("export-wav")! as HTMLButtonElement;
     const volumeSlider = document.getElementById("volume")! as HTMLInputElement;
     const pianoRollWindow = document.getElementById("piano-roll-window")!;
     const pianoRollContainer = document.getElementById("piano-roll")!;
@@ -116,5 +117,23 @@ window.onload = () => {
         setTimeout(() => {
             copyButton.textContent = originalText;
         }, 1200);
+    });
+
+    exportWavButton.addEventListener("click", async () => {
+        if (!song) return;
+        const audible = getAudibleSong(song);
+        if (audible.tracks.length === 0) return;
+
+        const originalText = exportWavButton.textContent;
+        exportWavButton.disabled = true;
+        exportWavButton.textContent = "Rendering...";
+        try {
+            const renderPlayer = new ZspuPlayer(audible.tracks, audible.tempo, audible.waveforms, audible.volumes);
+            const wavBlob = await renderPlayer.renderToWav();
+            downloadBlob(wavBlob, "songtest.wav");
+        } finally {
+            exportWavButton.disabled = false;
+            exportWavButton.textContent = originalText;
+        }
     });
 };

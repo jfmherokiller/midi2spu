@@ -1,5 +1,4 @@
-function downloadTextFile(content: string, filename: string, mimeType: string) {
-    const blob = new Blob([content], {type: mimeType});
+function downloadBlob(blob: Blob, filename: string) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -8,4 +7,8 @@ function downloadTextFile(content: string, filename: string, mimeType: string) {
     URL.revokeObjectURL(url);
 }
 
-export {downloadTextFile}
+function downloadTextFile(content: string, filename: string, mimeType: string) {
+    downloadBlob(new Blob([content], {type: mimeType}), filename);
+}
+
+export {downloadTextFile, downloadBlob}
