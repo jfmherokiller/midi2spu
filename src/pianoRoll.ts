@@ -1,5 +1,5 @@
 import {Song, isTrackAudible} from "./processing";
-import {WaveformId} from "./utilityfunctions";
+import {WaveformId} from "./midiConstants";
 
 const STEP_WIDTH = 20;
 const ROW_HEIGHT = 16;

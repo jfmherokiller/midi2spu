@@ -6,13 +6,13 @@
    is clamp(2^(note/12), 0, 255) / 100.
 
    Known unverified assumption: BASE_FREQUENCY=880 was chosen because this project's original
-   shared waveform was literally named "sine_880.wav". WAVEFORM_PATHS (utilityfunctions.ts) now
+   shared waveform was literally named "sine_880.wav". WAVEFORM_PATHS (midiConstants.ts) now
    uses the plain unprefixed synth/{square,saw,tri,sine}.wav files (per the user, preferred for
    simplicity over the precisely-pitched "_440"/"_880"/"_1760" variants confirmed to exist for
    every waveform in the real in-game sound browser) - their actual native pitch is unknown, not
    verified against the real asset files. Worth a real in-game check. */
 
-import {WaveformId} from "./utilityfunctions";
+import {WaveformId} from "./midiConstants";
 import {audioBufferToWavBlob} from "./wav";
 
 const BASE_FREQUENCY = 880;
