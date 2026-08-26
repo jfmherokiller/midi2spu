@@ -133,14 +133,24 @@ Source lives in `src/`:
     identical to plain RLE otherwise.
 - **`midiExtract.ts`** — turns a parsed `Midifile` into the per-step arrays the rest of the app
   uses:
-  - `getTempo` pulls the tempo meta-event from track 0 (falling back to the MIDI spec default of
-    120 BPM if none exists) and converts µs-per-beat into the generated script's tempo units by
-    multiplying BPM by `STEPS_PER_BEAT` (10). For an SMPTE-divided file (`midi.header.division.type
-    === "smpte"`), skips all of that — SMPTE files have no beat/tempo concept at all, so any
-    `setTempo` events present are ignored, and this returns a fixed effective tempo derived from
-    `midiTiming.ts`'s `SMPTE_STEPS_PER_SECOND` instead (`60 * SMPTE_STEPS_PER_SECOND`, chosen so
-    the generated script's `tempo()` busy-wait exactly matches one SMPTE-quantized step's real
-    duration).
+  - `getTempoTrack(midi, totalSteps)` (2026-08-26, replaced the old scalar `getTempo`) — one
+    scaled-BPM value **per output step**, not a single constant for the whole song. A MIDI file
+    can change tempo mid-song (ritardando, a tempo-mapped game rip, etc.); the old design used
+    only the *first* `setTempo` event and played the entire song at that one fixed rate. Scans
+    every track chunk (not just track 0 — spec allows `setTempo` anywhere, though convention puts
+    it there) for `setTempo` events, merges them by absolute tick, and walks them with the exact
+    same "hold the current value across elapsed steps" quantization `getnotes()` uses for notes
+    (via `midiTiming.ts`'s shared `ticksToStepsFloat`) — just applied to BPM values instead of
+    note numbers. Always returns exactly `totalSteps` entries (the caller passes the longest note
+    track's length) — anything past the last real tempo change holds that value, so the tempo
+    curve lines up 1:1 with every note track's own step indices without a separate padding step.
+    Verified against a real file with 421 tempo events (`bohemian1.mid` — a piece famous for
+    dramatic tempo shifts; the extracted curve has 73 distinct BPM values ranging 30-208 real
+    BPM). For an SMPTE-divided file (`midi.header.division.type === "smpte"`), skips all of that —
+    SMPTE files have no beat/tempo concept at all, so any `setTempo` events present are ignored,
+    and every step gets the same fixed effective tempo derived from `midiTiming.ts`'s
+    `SMPTE_STEPS_PER_SECOND` instead (`60 * SMPTE_STEPS_PER_SECOND`, chosen so the generated
+    script's `tempo()` busy-wait exactly matches one SMPTE-quantized step's real duration).
   - `getnotes` groups every `noteOn`/`noteOff` event (plus sustain-pedal and all-notes-off
     controller events, see below) by the pair **(raw track chunk index, MIDI channel)** — not by
     track index alone, and not by channel alone. Both simpler groupings are real bugs on real
@@ -202,41 +212,67 @@ Source lives in `src/`:
     is percussion iff its channel is 9 — exact by construction, not an incidentally-set flag.
 - **`scriptGen.ts`** — HLZASM text generation only, no MIDI-domain knowledge beyond the
   `WaveformId`/`usesPattern` shapes it's handed:
-  - `CreateDBLines` pads every track to the same total duration (with `-1`, so the whole ensemble
-    loops together in sync rather than each track wrapping back to its own start at a different
-    real time), then encodes each padded track via `rle.ts`'s `encodeRuns` before chunking into
-    ZSPU `db ...;` data-statement lines (32 values/line). Returns `{dblines, usesPattern}` -
-    `usesPattern[i]` says whether track `i`'s encoding contains a periodic-pattern block, which
-    `CreateFileString`/`constructLoopBlocks` need to know which decode code to emit for that
-    track. `CreateDBLines` doesn't mutate the array passed in.
-  - `CreateFileString(dblinesin, usesPattern, tempo, waveforms, volumes)` assembles the full ZSPU
-    script: per-channel `wset`/`chwave`/`chvolume`/`chstart` setup blocks (one **named wave string
-    var per track**, e.g. `wave0`/`wave1`/..., each bound to that track's chosen waveform — not a
-    single shared `trackwave` for every channel, which is what this project did before; matches
-    the real hand-written `mario_theme.txt` example's pattern of separate named wave vars per
-    track — see `zcpu-notes/docs/EXAMPLES.md`), then `main()`. **Each track decodes its own
-    encoding independently** — no shared index across tracks (an earlier version had one shared
-    `i` counting up to `tracklen = strlen(the longest track)`; a track shorter than that read
-    straight through into the next track's real data once `i` exceeded its own length, misread as
-    its own continuing melody — reported as a constant/stuck-sounding "solid tone" on
-    `Bolero-Ravel.mid`, fixed the same session RLE was added, superseded by this design since RLE
-    decoding needs per-track state anyway). For a track with `usesPattern[i]` false, per track
-    `N`: `if (remainN <= 0) { noteN = trackN[idxN]; remainN = trackN[idxN+1]; idxN += 2;
-    if (idxN >= tracklenN) idxN = 0; } remainN -= 1;` (unchanged from the plain-RLE-only design).
-    For `usesPattern[i]` true, the header-read branches on `trackN[idxN] == PATTERN_MARK` to set
-    up `patternlenN`/`patternstartN` (1/`idxN` for a plain run, the real period length/start for a
-    pattern block) before a shared tail common to both: `noteN = trackN[patternstartN+
-    patternposN]; patternposN += 1; if (patternposN >= patternlenN) patternposN = 0;
-    remainN -= 1;` — then the existing `fpwr`/`chpitch` pitch application, unchanged either way.
-    `tracklenN = strlen(trackN)` computed once per track before `main()` (one per track, not a
-    single shared `tracklen`). Also emits a `tempo()` busy-wait helper and a `strlen()` helper
-    (ZSPU has no native one).
+  - `CreateDBLines(namedTracks: {name, values}[])` (generalized 2026-08-26 from a positional
+    `number[][]` to named tracks — see why below) pads/truncates every track to the same total
+    duration (with `-1`, so the whole ensemble loops together in sync rather than each track
+    wrapping back to its own start at a different real time), then encodes each one via `rle.ts`'s
+    `encodeRuns` before chunking into ZSPU `db ...;` data-statement lines (32 values/line,
+    labeled `${name}:`). Returns `{dblines, usesPattern}` - `usesPattern[i]` says whether track
+    `i`'s encoding contains a periodic-pattern block, which `CreateFileString`/`constructLoopBlocks`
+    need to know which decode code to emit for that track. Doesn't mutate the arrays passed in.
+  - **Why named tracks, not positional**: the caller (`processing.ts`'s `generateScript`) always
+    appends one extra pseudo-track named `temposeq` after every real note track (`track0`,
+    `track1`, ...) — the song's tempo curve (see `midiExtract.ts`'s `getTempoTrack`), encoded and
+    decoded through the *exact same* RLE/pattern-block machinery as a note track, just driving
+    `tempo(curtempo)` instead of `chpitch` once decoded (see `emitDecodeBlock` below). Positional
+    `trackN` naming had no natural slot for a track that isn't really "track N" of anything.
+    `usesPattern`'s last entry (index `numberOfTracks`) is always the tempo pseudo-track's.
+  - `emitDecodeBlock(valueVar, suffix, arrName, usesPattern)` — the actual per-tick decode state
+    machine, factored out so the *identical* logic drives both a note track and the tempo
+    pseudo-track instead of two near-duplicate copies. `valueVar` is the variable the decoded
+    value ends up in (`note0`, or `curtempo` for tempo); `suffix` names every other piece of state
+    for this track (`idx${suffix}`, `remain${suffix}`, `tracklen${suffix}`, and - only when
+    `usesPattern` - `patternlen/patternstart/patternpos${suffix}`). While the current run/pattern
+    still has ticks remaining, just cycles through its held value(s); once it runs out, reads the
+    next block header (wrapping to the start of its own array at its own `tracklen${suffix}`) and
+    starts counting that one down - each track/the tempo curve needs its own independent decode
+    state like this since RLE blocks mean they're independently partway through different-length
+    blocks at any given tick (an earlier version had one shared index across every note track; see
+    git history for the "solid tone" bug that caused). A block header is either a plain run
+    `[value,count]` or, if the first value is `PATTERN_MARK`, a repeating-sequence block
+    `[PATTERN_MARK, periodLength, ...periodValues, repeatCount]` (see `rle.ts`'s
+    `encodePeriodicRuns`) - both decoded through the same `patternstart`/`patternlen`/`patternpos`
+    state either way, so the decoded value is always just `arr[patternstart+patternpos]`. Only
+    emitted (and only declares its pattern-branch variables, in `constructBodyOfFile`) for a
+    track/the tempo curve when `usesPattern` is true for it - fixed code-size cost, not worth
+    paying when `encodeRuns` didn't find a periodic win.
+  - `constructLoopBlocks` calls `emitDecodeBlock` once for the tempo pseudo-track (`curtempo`/
+    `tempo`/`"temposeq"`) **first**, immediately followed by `tempo(curtempo);` - the same
+    relative position a literal `tempo(1280)`-style constant call used to occupy at the very top
+    of `main()`'s body, just data-driven now so playback speed actually follows a mid-song tempo
+    change instead of using whatever the first tempo happened to be for the whole song (see
+    `getTempoTrack`). Then calls it once per note track (`note0`/`"0"`/`"track0"`, etc.), each
+    followed by the existing `fpwr`/`chpitch` pitch application, unchanged.
+  - `CreateFileString(dblinesin, usesPattern, waveforms, volumes)` assembles the full ZSPU script:
+    per-channel `wset`/`chwave`/`chvolume`/`chstart` setup blocks (one **named wave string var per
+    track**, e.g. `wave0`/`wave1`/..., each bound to that track's chosen waveform — not a single
+    shared `trackwave` for every channel, which is what this project did before; matches the real
+    hand-written `mario_theme.txt` example's pattern of separate named wave vars per track — see
+    `zcpu-notes/docs/EXAMPLES.md`), then `main()` (via `constructLoopBlocks` above). Also declares
+    `curtempo`/`idxtempo`/`remaintempo`/`tracklentempo` (plus the pattern-branch vars if
+    `usesPattern[numberOfTracks]`) alongside each note track's own decode variables, and
+    `tracklentempo = strlen(temposeq);` alongside each `tracklenN = strlen(trackN);`. Also emits a
+    `tempo()` busy-wait helper and a `strlen()` helper (ZSPU has no native one). No longer takes a
+    `tempo: number` parameter at all — there's no single constant left to pass, the tempo curve is
+    entirely data-driven now.
 - **`processing.ts`** — the editable song model:
-  - `Song` — `{tracks: number[][], tempo: number, waveforms: WaveformId[], volumes: number[],
-    muted: boolean[], solo: boolean[], isPercussion: boolean[]}`, all per-track arrays parallel to
-    `tracks`. `tracks` is mutated **in place** by the piano roll editor; nothing else here is
-    currently editable (tempo, in particular, is fixed at load time — the MIDI file's first tempo
-    event). `isPercussion[i]` is true if any event in that track was on the GM percussion channel
+  - `Song` — `{tracks: number[][], tempoTrack: number[], waveforms: WaveformId[], volumes:
+    number[], muted: boolean[], solo: boolean[], isPercussion: boolean[], warnings: string[]}`.
+    `tempoTrack` (renamed from a scalar `tempo` on 2026-08-26 — see `midiExtract.ts`'s
+    `getTempoTrack`) is one scaled-BPM value per step, song-global rather than per-track, so
+    `getAudibleSong` below copies it through unfiltered by the audible-track index list. `tracks`
+    is mutated **in place** by the piano roll editor; nothing else in `Song` is currently editable.
+    `isPercussion[i]` is true if any event in that track was on the GM percussion channel
     (computed by `getnotes()` in the same pass that builds `tracks`, so indices can't drift out of
     sync with `getnotes()`'s own empty-track filtering).
   - `loadMidi(buffer): Song` — parses + calls `getnotes()`, defaults every track to volume `0.5`,
@@ -260,12 +296,16 @@ Source lives in `src/`:
     matching waveforms/volumes) — muted/soloed-out tracks are never played or exported. Both
     `generateScript` (below) and `app.ts`'s Play handler call this before using `song.tracks`, so
     what you hear always matches what gets exported.
-  - `generateScript(song): string` — runs `getAudibleSong` then `CreateDBLines`/`CreateFileString`
-    fresh from *current* `song` state. Called on demand at each Play/Download/Copy click, not
-    cached — this is what makes piano-roll edits (including mute/solo) actually show up in
-    playback and exported output. Returns a short comment instead of a broken script if zero
-    tracks end up audible (the naive `longestTrack` index lookup in `CreateFileString` breaks on
-    an empty array otherwise).
+  - `generateScript(song): string` — runs `getAudibleSong`, then truncates/hold-pads
+    `audible.tempoTrack` to exactly match the audible tracks' own max length (`tempoTrack` is
+    computed once from the *original* song's longest track in `loadMidi`, so muting/soloing down
+    to a shorter set of audible tracks can leave it longer than `CreateDBLines`' own per-track `-1`
+    padding would be correct for — `-1` is meaningless as a tempo), builds the named-track list
+    (`track0`, `track1`, ..., then `temposeq` last — see `scriptGen.ts`), and runs
+    `CreateDBLines`/`CreateFileString` fresh from *current* `song` state. Called on demand at each
+    Play/Download/Copy click, not cached — this is what makes piano-roll edits (including
+    mute/solo) actually show up in playback and exported output. Returns a short comment instead
+    of a broken script if zero tracks end up audible.
 - **`player.ts`** — `ZspuPlayer`, a Web Audio playback engine for the "Play preview" button.
   Deliberately mimics the real ZSPU rather than doing generic MIDI/soundfont playback (see
   `zcpu-notes/docs/HLZASM.md`'s "SPU audio model" section for why): one `OscillatorNode` per
@@ -296,8 +336,22 @@ Source lives in `src/`:
   does) — a new `ZspuPlayer` is constructed fresh on every Play click from `getAudibleSong(song)`
   (see `processing.ts`), so edits and mute/solo changes since the last play are picked up.
   `getCurrentStep()` returns the current playback position in grid steps (or `null` when not
-  playing), computed from the stored `AudioContext` start time — polled by `app.ts` via
-  `requestAnimationFrame` to drive the piano roll's playhead/follow-scroll.
+  playing) — polled by `app.ts` via `requestAnimationFrame` to drive the piano roll's
+  playhead/follow-scroll.
+  - **Variable-tempo real-time scheduling** (2026-08-26). The constructor now takes a
+    `tempoTrack: number[]` (one scaled-BPM value per step, see `midiExtract.ts`'s
+    `getTempoTrack`) instead of a single `tempo: number`, and precomputes
+    `cumulativeStepTime: number[]` once — a prefix sum where `cumulativeStepTime[i]` is the
+    wall-clock seconds from step 0 to the *start* of step `i` (each step's own real duration is
+    `60/scaledBpm` seconds), with one trailing entry past the last real step giving the total
+    duration. `scheduleTrack` below schedules note `i`'s automation at
+    `startTime + cumulativeStepTime[i]` instead of `startTime + i*secondsPerStep` — a mid-song
+    tempo change now actually changes playback speed instead of the whole song playing at
+    whatever the first tempo was. `getCurrentStep()` correspondingly does a binary search
+    (`stepAtElapsedTime`) over `cumulativeStepTime` for the current elapsed real time instead of a
+    single division, since elapsed time no longer maps linearly to step index. Verified live
+    against a real 421-tempo-event file (`bohemian1.mid`) — playhead follows correctly through
+    real tempo shifts, `renderToWav()` (below) produces a correctly-timed ~6-minute file.
   - The actual per-track source/gain graph + note-automation scheduling lives in a private
     `scheduleTrack(audioContext, destination, trackIndex, startTime)`, shared between live
     `play()` and `renderToWav()` below — both `AudioContext` and `OfflineAudioContext` implement
