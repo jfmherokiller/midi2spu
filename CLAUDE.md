@@ -53,18 +53,37 @@ Source lives in `src/`:
   - `GetTempo` pulls the tempo meta-event from track 0 (falling back to the MIDI spec default of
     120 BPM if none exists) and converts µs-per-beat into the generated script's tempo units by
     multiplying BPM by `STEPS_PER_BEAT` (10).
-  - `getnotes` walks every track's events and, using each event's `deltaTime` converted to output
-    steps via `ticksPerBeat`/`STEPS_PER_BEAT`, produces one array entry per output step — holding
-    the currently-sounding note (or `-1` for silence) across however many steps elapsed before the
-    next event. This is what encodes real note duration and rests into the output, not just a
-    per-event dump. Percussion-channel (index 9, i.e. GM channel 10) events are treated like any
-    other track's notes (held note set on noteOn, cleared on noteOff, reusing the raw GM drum note
-    number as the "pitch") — this used to `continue` past percussion noteOn/noteOff entirely,
-    silently exporting/playing pure-percussion tracks as one long rest, until a real file
-    (`Rainbow Tylenol.mid`) whose drums were the only thing sounding during long melodic rests
-    made the resulting silence obvious. `STEPS_PER_BEAT` must stay in sync between this
-    function and `GetTempo` — it's the shared time resolution both assume, and also what the piano
-    roll editor's grid columns are quantized to.
+  - `getnotes` groups every `noteOn`/`noteOff` event by the pair **(raw track chunk index,
+    MIDI channel)** — not by track index alone, and not by channel alone. Both simpler groupings
+    are real bugs on real files: a MIDI *track chunk* and a MIDI *channel* aren't the same thing.
+    A track-index-only grouping (the original design) breaks on format-0 files, which put an
+    entire multi-instrument song in one single track chunk multiplexing up to 16 channels — every
+    instrument's noteOn/noteOff clobbered one shared `currentNote`, so the whole song loaded as
+    one garbled channel (found via `The-Rhythm-Of-The-Night-3.mid`, format 0, 13 channels in one
+    chunk). A channel-only grouping (a first attempt at the fix) breaks the *other* way on format-1
+    files that legitimately reuse a channel across several distinct instrument tracks — real
+    orchestral scores can have more instrument parts than MIDI's 16-channel limit, e.g.
+    `Bolero-Ravel.mid` declares 3 separate `*Flutes` tracks all on channel 0 — grouping by channel
+    alone would merge those back into one clobbered line, the same bug from the opposite
+    direction. Grouping by the (track,channel) pair handles both: a format-0 file still splits by
+    channel (only one track index exists), while a file with real per-track channel reuse keeps
+    each track chunk's own instrument separate. For the common case (one channel per track, true
+    of most files this project was tested against before these two), this reproduces the original
+    per-track grouping exactly. Per matching group, walks its events in file order and, using
+    each event's tick position converted to output steps via `ticksPerBeat`/`STEPS_PER_BEAT`,
+    produces one array entry per output step — holding the currently-sounding note (or `-1` for
+    silence) across however many steps elapsed before the next event. This is what encodes real
+    note duration and rests into the output, not just a per-event dump. Percussion-channel (index
+    9, i.e. GM channel 10) events are treated like any other group's notes (held note set on
+    noteOn, cleared on noteOff, reusing the raw GM drum note number as the "pitch") — this used to
+    `continue` past percussion noteOn/noteOff entirely, silently exporting/playing pure-percussion
+    tracks as one long rest, until a real file (`Rainbow Tylenol.mid`) whose drums were the only
+    thing sounding during long melodic rests made the resulting silence obvious. A group is
+    percussion iff its channel is 9 — exact by construction now, whereas the old per-track
+    `hasPercussionEvent` flag could be wrongly set by a single incidental channel-9 event mixed
+    into an otherwise-melodic track. `STEPS_PER_BEAT` must stay in sync between this function and
+    `GetTempo` — it's the shared time resolution both assume, and also what the piano roll
+    editor's grid columns are quantized to.
   - `WaveformId`/`WAVEFORM_PATHS` — square/saw/tri/sine/noise mapped to their `synth/*.wav`
     resource paths, confirmed against the real in-game sound browser (not just inferred from
     source — `cl_spuvm.lua`'s `VM:Reset()` only auto-loads square/saw/tri/sine into the 4 default
