@@ -11,6 +11,7 @@ export interface Song {
     muted: boolean[];
     solo: boolean[];
     isPercussion: boolean[];
+    warnings: string[];
 }
 
 const DEFAULT_VOLUME = 0.5;
@@ -23,7 +24,19 @@ export function loadMidi(midi: ArrayBuffer): Song {
     let volumes: number[] = tracks.map(() => DEFAULT_VOLUME);
     let muted: boolean[] = tracks.map(() => false);
     let solo: boolean[] = tracks.map(() => false);
-    return {tracks, tempo, waveforms, volumes, muted, solo, isPercussion};
+    let warnings: string[] = [];
+    /* Format 2 tracks are independent patterns meant to be triggered on demand (drum-machine-
+       style pattern banks), not concatenated into one linear song - this whole app's export model
+       (every track loops forever, simultaneously, from step 0) doesn't map onto "play pattern 1,
+       then pattern 2" in any single obviously-correct way, and format-2 files are effectively
+       nonexistent for this project's real use case (confirmed via a full survey of the user's
+       ~2,788-file collection - zero format-2 files found). So this doesn't attempt real sequential
+       playback - it surfaces a warning instead of silently producing a likely-wrong result. */
+    if (midicontent.header.formatType === 2) {
+        warnings.push("Format 2 (sequential pattern) file - tracks will be treated as playing "
+            + "simultaneously, which is likely wrong for this file type.");
+    }
+    return {tracks, tempo, waveforms, volumes, muted, solo, isPercussion, warnings};
 }
 
 /* A track is audible (plays back / exports) if it isn't muted, and - if any track is soloed -
@@ -48,6 +61,7 @@ export function getAudibleSong(song: Song): Song {
         muted: audibleIndexes.map(() => false),
         solo: audibleIndexes.map(() => false),
         isPercussion: audibleIndexes.map(i => song.isPercussion[i]),
+        warnings: song.warnings,
     };
 }
 

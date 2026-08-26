@@ -1,5 +1,6 @@
 import {Midifile} from "./MidiFile";
 import {PERCUSSION_CHANNEL} from "./midiConstants";
+import {ticksToStepsFloat, SMPTE_STEPS_PER_SECOND} from "./midiTiming";
 
 /* The generated ZSPU main() loop advances one `db` array entry per tempo()
    tick, and GetTempo multiplies BPM by this factor - so each entry
@@ -11,6 +12,14 @@ const STEPS_PER_BEAT = 10;
 const DEFAULT_MICROSECONDS_PER_BEAT = 500000;
 
 function getTempo(midi: Midifile) {
+    if (midi.header.division.type === "smpte") {
+        /* SMPTE-timed files have no beat/tempo concept - a fixed real-time clock instead - so any
+           setTempo events present (spec doesn't forbid them, but they're meaningless here) are
+           ignored, and this returns a fixed effective tempo instead: chosen so tempo()'s per-tick
+           busy-wait (60/bpm seconds) exactly equals one SMPTE-quantized step
+           (1/SMPTE_STEPS_PER_SECOND seconds). */
+        return 60 * SMPTE_STEPS_PER_SECOND;
+    }
     let tempoEvent = midi.tracks[0].filter(x => x.microsecondsPerBeat != null)[0];
     let microsecondsPerBeat = tempoEvent?.microsecondsPerBeat ?? DEFAULT_MICROSECONDS_PER_BEAT;
     let tempo = 60000000 / microsecondsPerBeat;
@@ -107,7 +116,7 @@ function getnotes(midi: Midifile) {
             let deltaTicks = absoluteTick - lastTick;
             lastTick = absoluteTick;
             if (deltaTicks > 0) {
-                fractionalSteps += (deltaTicks / midi.header.ticksPerBeat) * STEPS_PER_BEAT;
+                fractionalSteps += ticksToStepsFloat(midi.header.division, STEPS_PER_BEAT, deltaTicks);
                 let steps = Math.floor(fractionalSteps);
                 fractionalSteps -= steps;
                 for (let s = 0; s < steps; s++) {

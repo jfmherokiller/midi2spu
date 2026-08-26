@@ -7,6 +7,7 @@ import {PianoRoll} from "./pianoRoll"
 window.onload = () => {
     const fileInput = document.getElementById("file")! as HTMLInputElement;
     const dropzone = document.getElementById("dropzone")!;
+    const warningBox = document.getElementById("warning")!;
     const controls = document.getElementById("controls")!;
     const playButton = document.getElementById("play")! as HTMLButtonElement;
     const stopButton = document.getElementById("stop")! as HTMLButtonElement;
@@ -52,6 +53,13 @@ window.onload = () => {
 
         const buffer = await file.arrayBuffer();
         song = loadMidi(buffer);
+
+        if (song.warnings.length > 0) {
+            warningBox.textContent = song.warnings.join(" ");
+            warningBox.style.display = "";
+        } else {
+            warningBox.style.display = "none";
+        }
 
         controls.style.display = "";
         pianoRollWindow.style.display = "";

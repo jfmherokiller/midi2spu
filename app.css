@@ -31,6 +31,15 @@ body {
     background: #d4e4fb;
 }
 
+#warning {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid #c99a1e;
+    background: #fff3cd;
+    color: #664d03;
+    font-size: 12px;
+}
+
 #piano-roll-window {
     width: 100%;
     max-width: calc(100vw - 48px);

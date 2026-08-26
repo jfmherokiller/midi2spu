@@ -1,4 +1,5 @@
-﻿
+﻿import {MidiDivision} from "./midiTiming";
+
 interface IEvent {
     deltaTime: number,
     type: string,
@@ -36,14 +37,14 @@ interface IEvent {
 
 class MidiHeader
 {
-    ticksPerBeat: number;
+    division: MidiDivision;
     trackCount: number;
     formatType: number;
 
-    constructor(formatype: number, trackCount: number, ticksPerBeat: number) {
+    constructor(formatype: number, trackCount: number, division: MidiDivision) {
         this.formatType = formatype;
         this.trackCount = trackCount;
-        this.ticksPerBeat = ticksPerBeat;
+        this.division = division;
     }
 }
 class Chunk {
@@ -63,7 +64,6 @@ class Midifile {
     stream: ByteStream;
     tracks:IEvent[][] = new Array();
     constructor(data: ArrayBuffer) {
-        let ticksPerBeat: number;
         this.stream = new ByteStream(data);
         const headerChunk = this.readChunk(this.stream);
         if (headerChunk.id !== "MThd" || headerChunk.length !== 6) {
@@ -74,12 +74,19 @@ class Midifile {
         var trackCount = headerStream.readInt16();
         var timeDivision = headerStream.readInt16();
 
+        let division: MidiDivision;
         if (timeDivision & 0x8000) {
-            throw "Expressing time division in SMTPE frames is not supported yet";
+            /* SMPTE time division: top byte is the frame rate stored as a negative two's-
+               complement byte (-24/-25/-29/-30 for 24/25/29.97/30 fps), bottom byte is ticks per
+               frame. No beat/tempo concept applies to these files at all - see midiTiming.ts. */
+            let rawFrameByte = (timeDivision >> 8) & 0xff;
+            let framesPerSecond = -(rawFrameByte > 127 ? rawFrameByte - 256 : rawFrameByte);
+            let ticksPerFrame = timeDivision & 0xff;
+            division = {type: "smpte", framesPerSecond, ticksPerFrame};
         } else {
-            ticksPerBeat = timeDivision;
+            division = {type: "ppqn", ticksPerBeat: timeDivision};
         }
-        this.header = new MidiHeader(formatType, trackCount, ticksPerBeat);
+        this.header = new MidiHeader(formatType, trackCount, division);
 
         /* The spec requires readers to tolerate non-MTrk chunks appearing anywhere a chunk is
            expected ("Your programs should expect alien chunks and treat them as if they weren't
