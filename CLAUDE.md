@@ -190,6 +190,26 @@ Source lives in `src/`:
   `getCurrentStep()` returns the current playback position in grid steps (or `null` when not
   playing), computed from the stored `AudioContext` start time — polled by `app.ts` via
   `requestAnimationFrame` to drive the piano roll's playhead/follow-scroll.
+  - The actual per-track source/gain graph + note-automation scheduling lives in a private
+    `scheduleTrack(audioContext, destination, trackIndex, startTime)`, shared between live
+    `play()` and `renderToWav()` below — both `AudioContext` and `OfflineAudioContext` implement
+    `BaseAudioContext`, so identical scheduling code produces identical audio either way; only the
+    context type and destination differ.
+  - `renderToWav(): Promise<Blob>` — the "Export .wav" button. Builds an `OfflineAudioContext`
+    (mono, 44.1kHz) sized to the song's full duration, schedules every track into it exactly like
+    `play()`, then `startRendering()`s (computes the audio as fast as possible, not in real time)
+    and hands the resulting `AudioBuffer` to `wav.ts`'s `audioBufferToWavBlob` (Web Audio has no
+    built-in encoder, so this hand-rolls a standard 16-bit PCM `.wav` — RIFF/WAVE headers, one
+    `data` chunk of interleaved `Int16` samples clamped from the buffer's `Float32` ones).
+    Deliberately does *not* apply the live preview volume slider (`this.volume`) — only the
+    per-track loudness normalization (`trackScaling`) — since the slider is a preview-only
+    convenience, not a song setting; the export is meant to reproduce "the song as configured"
+    (mute/solo/waveform/volume per track, via `getAudibleSong` same as the `.txt` export),
+    independent of whatever the slider happened to be at during a prior preview. Verified against
+    the full test-file set (see `TASKS.md`) via a captured-`Blob` check in a live browser (parsed
+    the WAV header back out, confirmed non-silent PCM data) rather than assuming
+    `OfflineAudioContext` support — a ~26-track/14-minute file (`Bolero-Ravel.mid`) rendered to a
+    valid ~75MB `.wav` with no errors, confirming this scales fine to the existing test files.
 - **`pianoRoll.ts`** — `PianoRoll`, the note editor. Takes a `Song` and a container element;
   renders (and owns all interaction for) a track sidebar and a scrollable step/pitch grid that
   shows **every audible track simultaneously** (not just the selected one — each gets a distinct
@@ -245,8 +265,12 @@ Source lives in `src/`:
     by giving it an explicit large width again without also properly clipping/scrolling it. The
     same defensive pattern (`overflow-x: auto` + `max-width: 100%`) is now also applied to
     `.piano-roll` itself, as a safety net in case the resize handle above is ever dragged very wide.
-- **`download.ts`** — `downloadTextFile(content, filename, mimeType)`, a small native
-  Blob + `URL.createObjectURL` + `<a download>` helper.
+- **`wav.ts`** — `audioBufferToWavBlob(buffer: AudioBuffer): Blob`, the standalone PCM16 `.wav`
+  encoder used by `player.ts`'s `renderToWav()`. Pure function, no DOM/Web-Audio-context
+  dependency beyond reading an already-rendered `AudioBuffer`'s channel data.
+- **`download.ts`** — `downloadBlob(blob, filename)`, a small native `URL.createObjectURL` +
+  `<a download>` helper; `downloadTextFile(content, filename, mimeType)` wraps it for the
+  text-content case (`.txt` export).
 - **`app.ts`** — the only remaining DOM-wiring code, and the sole `xp.css` import site. Holds one
   `Song | null`, one `ZspuPlayer | null`, one `PianoRoll | null`, and a `requestAnimationFrame`
   handle for the playhead-follow loop. Both the `#file` `<input>`'s `change` event and
@@ -259,7 +283,11 @@ Source lives in `src/`:
   `stopFollowingPlayhead()` on Stop, on natural playback end, or on any `PianoRoll.onChange`.
   Download/Copy call `generateScript(song)` fresh (which internally filters through
   `getAudibleSong` too) — both read *current* `song` state at click time, so piano-roll edits and
-  mute/solo changes need no extra plumbing to take effect. A `window`-level `dragover`/`drop`
+  mute/solo changes need no extra plumbing to take effect. Export .wav similarly builds a fresh
+  `ZspuPlayer` from `getAudibleSong(song)` at click time and awaits `renderToWav()`
+  (disables the button and shows "Rendering..." for the duration — rendering is async but can
+  still take a moment on a long/many-track song, even though it's faster than real time) before
+  handing the result to `downloadBlob`. A `window`-level `dragover`/`drop`
   listener pair calls `preventDefault()` so a drop outside `#dropzone` doesn't navigate the page
   away to the dropped file.
 
