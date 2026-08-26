@@ -34,22 +34,44 @@ function getTempo(midi: Midifile) {
    separate regardless of what channel number it happens to share with another track. For the
    common case (one channel per track, true of most files this project was tested against before
    these two), this produces the same grouping as before. */
+/* MIDI channels 0-15; a real GM controller number. Controller 64 is handled by the sustain-pedal
+   logic in the per-group walk below, not filtered out here. */
+const CC_ALL_SOUND_OFF = 120;
+const CC_ALL_NOTES_OFF = 123;
+const CC_SUSTAIN = 64;
+const CC_SUSTAIN_ON_THRESHOLD = 64; // spec: 0-63 = off, 64-127 = on
+
 function getnotes(midi: Midifile) {
-    interface ChannelEvent {
+    interface NoteEvent {
         absoluteTick: number;
-        subtype: "noteOn" | "noteOff";
-        noteNumber: number;
+        kind: "noteOn" | "noteOff" | "allNotesOff" | "sustain";
+        noteNumber: number; // meaningful for noteOn/noteOff only
+        sustainDown: boolean; // meaningful for "sustain" only
     }
     interface TrackChannelGroup {
         channel: number;
-        events: ChannelEvent[];
+        events: NoteEvent[];
     }
     let groups = new Map<string, TrackChannelGroup>();
     for (let trackIndex = 0; trackIndex < midi.tracks.length; trackIndex++) {
         let absoluteTick = 0;
         for (let midievent of midi.tracks[trackIndex]) {
             absoluteTick += midievent.deltaTime;
-            if (midievent.subtype !== "noteOn" && midievent.subtype !== "noteOff") continue;
+            let kind: NoteEvent["kind"];
+            let noteNumber = -1;
+            let sustainDown = false;
+            if (midievent.subtype === "noteOn" || midievent.subtype === "noteOff") {
+                kind = midievent.subtype;
+                noteNumber = midievent.noteNumber ?? -1;
+            } else if (midievent.subtype === "controller"
+                && (midievent.controllerType === CC_ALL_SOUND_OFF || midievent.controllerType === CC_ALL_NOTES_OFF)) {
+                kind = "allNotesOff";
+            } else if (midievent.subtype === "controller" && midievent.controllerType === CC_SUSTAIN) {
+                kind = "sustain";
+                sustainDown = (midievent.value ?? 0) >= CC_SUSTAIN_ON_THRESHOLD;
+            } else {
+                continue;
+            }
             let channel = midievent.channel!;
             let key = trackIndex + ":" + channel;
             if (!groups.has(key)) {
@@ -57,11 +79,7 @@ function getnotes(midi: Midifile) {
             }
             // Events for a given (track,channel) pair are pushed in file order (deltaTime
             // accumulates monotonically), so this list is already sorted by absoluteTick.
-            groups.get(key)!.events.push({
-                absoluteTick,
-                subtype: midievent.subtype,
-                noteNumber: midievent.noteNumber ?? -1,
-            });
+            groups.get(key)!.events.push({absoluteTick, kind, noteNumber, sustainDown});
         }
     }
 
@@ -69,10 +87,23 @@ function getnotes(midi: Midifile) {
     let isPercussion: boolean[] = [];
     for (let {channel, events} of groups.values()) {
         let track: number[] = [];
+        /* Notes currently sounding, most-recently-pressed last ("last note held wins" - standard
+           monophonic synth priority, matches this project's one-pitch-per-channel export model).
+           A noteOff only changes what's audible if it releases the note that's actually on top of
+           the stack - releasing an *older* still-technically-held note (overlapping/legato notes,
+           or a chord) just removes it from the stack without silencing whatever's currently
+           sounding. This replaces the old "any noteOff silences the channel" behavior, which
+           incorrectly cut off the currently-sounding note whenever an earlier note's noteOff
+           arrived after a later noteOn had already taken over. */
+        let heldNotes: number[] = [];
+        /* Notes that got a noteOff *while the sustain pedal was down* - release is deferred until
+           the pedal lifts (see the "sustain" case below), not dropped. */
+        let sustainedNotes = new Set<number>();
+        let sustainDown = false;
         let currentNote = -1;
         let fractionalSteps = 0;
         let lastTick = 0;
-        for (let {absoluteTick, subtype, noteNumber} of events) {
+        for (let {absoluteTick, kind, noteNumber, sustainDown: pedalDown} of events) {
             let deltaTicks = absoluteTick - lastTick;
             lastTick = absoluteTick;
             if (deltaTicks > 0) {
@@ -83,9 +114,44 @@ function getnotes(midi: Midifile) {
                     track.push(currentNote);
                 }
             }
-            currentNote = subtype === "noteOn" ? noteNumber : -1;
+            if (kind === "noteOn") {
+                heldNotes.push(noteNumber);
+                sustainedNotes.delete(noteNumber); // retriggering cancels a pending sustain-release
+                currentNote = noteNumber;
+            } else if (kind === "noteOff") {
+                if (sustainDown) {
+                    // Deferred: keep sounding (stays in heldNotes) until the pedal lifts.
+                    sustainedNotes.add(noteNumber);
+                } else {
+                    let idx = heldNotes.lastIndexOf(noteNumber);
+                    if (idx !== -1) heldNotes.splice(idx, 1);
+                    currentNote = heldNotes.length > 0 ? heldNotes[heldNotes.length - 1] : -1;
+                }
+            } else if (kind === "sustain") {
+                sustainDown = pedalDown;
+                if (!sustainDown) {
+                    for (let note of sustainedNotes) {
+                        let idx = heldNotes.lastIndexOf(note);
+                        if (idx !== -1) heldNotes.splice(idx, 1);
+                    }
+                    sustainedNotes.clear();
+                    currentNote = heldNotes.length > 0 ? heldNotes[heldNotes.length - 1] : -1;
+                }
+            } else { // allNotesOff / allSoundOff
+                heldNotes = [];
+                sustainedNotes.clear();
+                currentNote = -1;
+            }
         }
-        if (track.length > 0) {
+        /* A group is only worth exporting as a track if it actually sounds a note somewhere -
+           broadening the event filter above to also capture sustain/all-notes-off controller
+           events means a channel that uses ONLY those (no real noteOn at all) now forms its own
+           group too, which would otherwise produce an all-silent phantom track (every entry -1) -
+           the same kind of wasted-channel issue the track/channel-grouping fix eliminated for
+           metadata-only track chunks. `track.length > 0` alone doesn't catch this since the group
+           still has *some* events (just none of them are notes) - check for at least one real
+           note instead. */
+        if (track.some(note => note !== -1)) {
             notes.push(track);
             isPercussion.push(channel === PERCUSSION_CHANNEL);
         }

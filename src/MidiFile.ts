@@ -81,18 +81,31 @@ class Midifile {
         }
         this.header = new MidiHeader(formatType, trackCount, ticksPerBeat);
 
-        for (let i = 0; i < this.header.trackCount; i++) {
-            this.tracks[i] = new Array<IEvent>();
-            let trackChunk = this.readChunk(this.stream);
-            if (trackChunk.id !== "MTrk") {
-                throw "Unexpected chunk - expected MTrk, got " + trackChunk.id;
+        /* The spec requires readers to tolerate non-MTrk chunks appearing anywhere a chunk is
+           expected ("Your programs should expect alien chunks and treat them as if they weren't
+           there") - so this keeps reading chunks, silently skipping anything that isn't MTrk,
+           until trackCount real track chunks have been collected. readChunk always consumes
+           exactly the right number of bytes (via the chunk's own length field) whether or not we
+           keep it, so skipping is just "don't push it, keep looping". */
+        let tracksFound = 0;
+        while (tracksFound < this.header.trackCount) {
+            if (this.stream.eof()) {
+                throw "Unexpected end of file - expected " + this.header.trackCount
+                    + " MTrk chunks, found " + tracksFound;
             }
-            let trackStream = new ByteStream(trackChunk.data);
+            let chunk = this.readChunk(this.stream);
+            if (chunk.id !== "MTrk") {
+                continue;
+            }
+            let track = new Array<IEvent>();
+            let trackStream = new ByteStream(chunk.data);
             while (!trackStream.eof()) {
                 var event = this.readEvent(trackStream);
-                this.tracks[i].push(event);
+                track.push(event);
                 //console.log(event);
             }
+            this.tracks[tracksFound] = track;
+            tracksFound++;
         }
     }
     readChunk(stream: ByteStream): Chunk {
@@ -105,7 +118,13 @@ class Midifile {
         event.deltaTime = stream.readVarInt();
         var eventTypeByte = stream.readInt8();
         if ((eventTypeByte & 0xf0) === 0xf0) {
-            /* system / meta event */
+            /* system / meta event - none of these are valid running-status targets (running
+               status only applies to channel voice messages), and sysex/meta explicitly cancel
+               any running status per spec. Reset unconditionally here rather than only for the
+               cases that historically mattered, so a channel event immediately after any of these
+               correctly requires its own explicit status byte instead of silently reusing
+               whatever channel status happened to precede it. */
+            this.lastEventTypeByte = undefined;
             var length: number;
             if (eventTypeByte === 0xff) {
                 /* meta event */
@@ -113,11 +132,23 @@ class Midifile {
                 var subtypeByte = stream.readInt8();
                 length = stream.readVarInt();
                 switch (subtypeByte) {
-                    case 0x00:
+                    case 0x00: {
+                        /* Real-world files don't always match the spec's declared field lengths
+                           exactly (e.g. a non-standard encoder omitting trailing timeSignature
+                           bytes - found via a real file, "Moveslikejagger.mid"). Rather than
+                           throwing on any length mismatch, read whatever fields the declared
+                           length actually allows, default the rest, and always leave the stream
+                           at exactly `end` (declared start + length) afterward regardless of how
+                           many fields were actually read - this keeps every later event's
+                           position correct even for a malformed or vendor-padded field, which
+                           matters far more than getting every field of a rarely-used meta event
+                           exactly right. */
                         event.subtype = "sequenceNumber";
-                        if (length !== 2) throw "Expected length for sequenceNumber event is 2, got " + length;
-                        event.number = stream.readInt16();
+                        const end = stream.position + length;
+                        event.number = length >= 2 ? stream.readInt16() : 0;
+                        stream.position = end;
                         return event;
+                    }
                     case 0x01:
                         event.subtype = "text";
                         event.text = stream.readString(length);
@@ -146,51 +177,62 @@ class Midifile {
                         event.subtype = "cuePoint";
                         event.text = stream.readString(length);
                         return event;
-                    case 0x20:
+                    case 0x20: {
                         event.subtype = "midiChannelPrefix";
-                        if (length !== 1) throw "Expected length for midiChannelPrefix event is 1, got " + length;
-                        event.channel = stream.readInt8();
+                        const end = stream.position + length;
+                        event.channel = length >= 1 ? stream.readInt8() : 0;
+                        stream.position = end;
                         return event;
+                    }
                     case 0x2f:
                         event.subtype = "endOfTrack";
-                        if (length !== 0) throw "Expected length for endOfTrack event is 0, got " + length;
+                        stream.position += length; // normally 0; tolerate stray trailing bytes
                         return event;
-                    case 0x51:
+                    case 0x51: {
                         event.subtype = "setTempo";
-                        if (length !== 3) throw "Expected length for setTempo event is 3, got " + length;
-                        event.microsecondsPerBeat = (
-                            (stream.readInt8() << 16)
-                            + (stream.readInt8() << 8)
-                            + stream.readInt8()
-                        );
+                        const end = stream.position + length;
+                        const b0 = length >= 1 ? stream.readInt8() : 0;
+                        const b1 = length >= 2 ? stream.readInt8() : 0;
+                        const b2 = length >= 3 ? stream.readInt8() : 0;
+                        event.microsecondsPerBeat = (b0 << 16) + (b1 << 8) + b2;
+                        stream.position = end;
                         return event;
-                    case 0x54:
+                    }
+                    case 0x54: {
                         event.subtype = "smpteOffset";
-                        if (length !== 5) throw "Expected length for smpteOffset event is 5, got " + length;
-                        var hourByte = stream.readInt8();
+                        const end = stream.position + length;
+                        var hourByte = length >= 1 ? stream.readInt8() : 0;
                         event.frameRate = {
                             0x00: 24, 0x20: 25, 0x40: 29, 0x60: 30
                         }[hourByte & 0x60];
                         event.hour = hourByte & 0x1f;
-                        event.min = stream.readInt8();
-                        event.sec = stream.readInt8();
-                        event.frame = stream.readInt8();
-                        event.subframe = stream.readInt8();
+                        event.min = length >= 2 ? stream.readInt8() : 0;
+                        event.sec = length >= 3 ? stream.readInt8() : 0;
+                        event.frame = length >= 4 ? stream.readInt8() : 0;
+                        event.subframe = length >= 5 ? stream.readInt8() : 0;
+                        stream.position = end;
                         return event;
-                    case 0x58:
+                    }
+                    case 0x58: {
                         event.subtype = "timeSignature";
-                        if (length !== 4) throw "Expected length for timeSignature event is 4, got " + length;
-                        event.numerator = stream.readInt8();
-                        event.denominator = Math.pow(2, stream.readInt8());
-                        event.metronome = stream.readInt8();
-                        event.thirtyseconds = stream.readInt8();
+                        const end = stream.position + length;
+                        // Defaults match the spec's own "usual" values (24 clocks/click, 8
+                        // 32nds/quarter) for whichever trailing fields a short declaration omits.
+                        event.numerator = length >= 1 ? stream.readInt8() : 4;
+                        event.denominator = length >= 2 ? Math.pow(2, stream.readInt8()) : 4;
+                        event.metronome = length >= 3 ? stream.readInt8() : 24;
+                        event.thirtyseconds = length >= 4 ? stream.readInt8() : 8;
+                        stream.position = end;
                         return event;
-                    case 0x59:
+                    }
+                    case 0x59: {
                         event.subtype = "keySignature";
-                        if (length !== 2) throw "Expected length for keySignature event is 2, got " + length;
-                        event.key = stream.readInt8(true);
-                        event.scale = stream.readInt8();
+                        const end = stream.position + length;
+                        event.key = length >= 1 ? stream.readInt8(true) : 0;
+                        event.scale = length >= 2 ? stream.readInt8() : 0;
+                        stream.position = end;
                         return event;
+                    }
                     case 0x7f:
                         event.subtype = "sequencerSpecific";
                         event.data = stream.readBytes(length);
@@ -213,6 +255,17 @@ class Midifile {
                 length = stream.readVarInt();
                 event.data = stream.readBytes(length);
                 return event;
+            } else if (eventTypeByte >= 0xf1 && eventTypeByte <= 0xf6) {
+                /* System common messages - rare in a standard MIDI file (they're mostly a live-
+                   performance/sync concept: MTC quarter frame, song position pointer, song
+                   select, tune request) but technically legal, and not note-relevant, so this
+                   just consumes the right number of data bytes per spec and moves on instead of
+                   crashing the whole parse over a byte getnotes() would never look at anyway. */
+                event.type = "systemCommon";
+                event.subtype = "unknown";
+                const dataLength = eventTypeByte === 0xf2 ? 2 : (eventTypeByte === 0xf6 ? 0 : 1);
+                event.data = stream.readBytes(dataLength);
+                return event;
             } else {
                 throw "Unrecognised MIDI event type byte: " + eventTypeByte;
             }
@@ -223,6 +276,10 @@ class Midifile {
                 /* running status - reuse lastEventTypeByte as the event type.
                     eventTypeByte is actually the first parameter
                 */
+                if (this.lastEventTypeByte === undefined) {
+                    throw "Running status used without a preceding channel status byte (or after "
+                        + "a status-cancelling meta/sysex/system event) - malformed MIDI file";
+                }
                 param1 = eventTypeByte;
                 eventTypeByte = this.lastEventTypeByte;
             } else {
