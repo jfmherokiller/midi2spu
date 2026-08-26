@@ -97,11 +97,16 @@ the repo). Checked off as each phase is implemented **and** verified, not just i
 - [x] **Phase E** — sustain pedal (CC64), implemented together with Phase B since it shares the
       exact same held-note-stack rewrite (same commits as above). Real test file: `A-Team.mid`
       (12 real CC64 events, confirmed).
-- [ ] **Phase C — SMPTE** — real time-division support (`MidiHeader.division` discriminated union,
-      `midiTiming.ts`'s `ticksToStepsFloat`, `STEPS_PER_SECOND=20`). No real SMPTE file found yet
-      in the checked subset — may need a hand-built synthetic fixture.
-- [ ] **Phase C — format 2** — detect + UI warning (`Song.warnings`), no attempt at real sequential
-      pattern playback (scope decision, see plan's Context section for why).
+- [x] **Phase C — SMPTE** — real time-division support (`MidiHeader.division` discriminated union,
+      `midiTiming.ts`'s `ticksToStepsFloat`, `SMPTE_STEPS_PER_SECOND=20`). Commits `deec1a3`
+      (fix), `7bb4056` (docs). No real SMPTE file exists anywhere in the user's collection
+      (confirmed via full survey) - verified against a hand-built synthetic fixture
+      (`buildSynthetic.mjs`, not saved anywhere permanent - rebuild if needed again) instead.
+- [x] **Phase C — format 2** — detect + UI warning (`Song.warnings`, `#warning` banner in
+      `index.html`/`app.ts`), no attempt at real sequential pattern playback (scope decision, see
+      plan's Context section for why). Same commits as SMPTE above. Also zero real format-2 files
+      in the collection - verified with a hand-built synthetic fixture, live in browser (warning
+      shows/hides correctly).
 - [ ] **Phase D — mid-song tempo changes** — `getTempoTrack()`, `Song.tempo`→`Song.tempoTrack`,
       `player.ts` real-time scheduling via `cumulativeStepTime` prefix-sum + binary search, dynamic
       `tempo(curtempo)` in generated script. Biggest/last phase - do after B/C/E stabilize
