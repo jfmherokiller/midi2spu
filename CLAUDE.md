@@ -49,87 +49,144 @@ Source lives in `src/`:
   track is a flat array of parsed MIDI events in file order (note on/off, tempo meta events, etc.
   — see the `IEvent` interface for the full event shape, and each event's `deltaTime` for ticks
   elapsed since the previous event in that track). This is a self-contained parser, not app logic.
-- **`utilityfunctions.ts`** — all of the MIDI→ZSPU translation logic:
-  - `GetTempo` pulls the tempo meta-event from track 0 (falling back to the MIDI spec default of
+  Robustness fixes (2026-08-26, driven by real files that used to crash the whole parse):
+  - **Unknown chunks are skipped, not fatal.** The constructor used to require the chunk right
+    after the header to be `MTrk`, throwing otherwise. Spec explicitly allows non-`MTrk` chunks
+    anywhere a chunk is expected ("expect alien chunks and treat them as if they weren't there") -
+    now it keeps reading chunks until `trackCount` real `MTrk` chunks are collected, silently
+    skipping anything else (each chunk's own length field means skipping never desyncs the
+    stream).
+  - **System-common messages (0xF1-0xF6) no longer crash the parser.** These are rare in a
+    standard MIDI file (mostly a live-performance/sync concept - MTC quarter frame, song position
+    pointer, song select, tune request) but legal; `readEvent` now reads and discards the right
+    number of data bytes per type instead of throwing "Unrecognised MIDI event type byte".
+  - **Running status resets after any 0xF0+ event** (meta, sysex, divided sysex, or one of the new
+    system-common types) - spec requires this since none of those are valid running-status
+    targets. If a channel event afterward still tries running status with nothing to reuse, it now
+    throws a clear "running status used without a preceding status byte" error instead of silently
+    computing `NaN`-derived fields from an `undefined` reused status byte.
+  - **Meta events tolerate a declared length that doesn't match the field count.** `sequenceNumber`
+    /`midiChannelPrefix`/`setTempo`/`smpteOffset`/`timeSignature`/`keySignature` used to `throw` on
+    any length mismatch. Found via two real files (`Moveslikejagger.mid` and a variant) whose
+    `timeSignature` event declares length 2 (numerator+denominator only, omitting the
+    metronome/32nds bytes) - a non-standard but real-world encoder quirk. Now each case reads
+    whichever of its fields the declared length actually covers, defaults the rest (spec's own
+    "usual" values where one exists, e.g. 24 clocks/click), and always leaves the stream at
+    exactly `start + declaredLength` afterward (`ByteStream.position` is directly writable)
+    regardless of how many fields were actually read - correctness of *stream position* for every
+    later event matters far more than getting a rarely-used meta event's exact field values right
+    for a malformed file.
+- **`midiConstants.ts`** — small shared leaf constants with no logic: `PERCUSSION_CHANNEL` (GM
+  channel 10, 1-indexed, so index 9 here), and `WaveformId`/`WAVEFORM_PATHS` (square/saw/tri/sine/
+  noise mapped to their `synth/*.wav` resource paths, confirmed against the real in-game sound
+  browser — not just inferred from source; `cl_spuvm.lua`'s `VM:Reset()` only auto-loads
+  square/saw/tri/sine into the 4 default slots, but this project's generator always `WSET`s its
+  own explicit resource per channel anyway, so it isn't limited to those 4). Per the user, uses the
+  plain unprefixed files (`synth/sine.wav` etc.) rather than the also-real `_440`/`_880`/`_1760`
+  precisely-pitched variants, for simplicity — their actual native pitch is unverified (see
+  `BASE_FREQUENCY`'s comment in `player.ts`). `noise` → `synth/pink_noise.wav`, the default for
+  percussion tracks (see `isPercussion` in `processing.ts`) since a noise sample is far more
+  percussion-appropriate than a tuned tone. Imported by `scriptGen.ts`, `player.ts` (oscillator-
+  type mapping), and `pianoRoll.ts` (waveform dropdown).
+- **`rle.ts`** — pure data compression, no MIDI/HLZASM knowledge. `encodeRuns(track)` picks
+  between two encodings of one track's per-step values, whichever produces smaller *exported text*:
+  - **Plain run-length** (`encodePlainRuns`): flat `[note,count, note,count, ...]` pairs. Real
+    measured win: most held notes span many consecutive steps at `STEPS_PER_BEAT` quantization, so
+    this compresses 7-9x on real songs (`Bad Apple.mid`: 64,376 raw cells → 7,018; `Bolero-
+    Ravel.mid`: 265,330 → 35,222) — the SPU's default memory model is 128K cells, so a large
+    multi-track song can genuinely fail to fit (plausibly manifesting as the chip not starting at
+    all) without this.
+  - **Periodic-pattern** (`encodePeriodicRuns`): plain RLE does nothing for a short repeating
+    sequence (e.g. a 4-step arpeggio `2, -1, 3, 33, 2, -1, 3, 33, ...`) - no single value repeats,
+    so every step becomes its own `[note,1]` pair, roughly *doubling* size instead of shrinking it.
+    This greedily also tries periods 2..`MAX_PATTERN_PERIOD` (32) at each position and, if a period
+    repeats at least twice, can instead emit a single `[PATTERN_MARK(-2), periodLength,
+    ...periodValues, repeatCount]` block. Found via a real file (`Intensive Care Unit
+    TheVocoderGuy.mid`) with exactly this kind of oscillating sequence in its data.
+  - The catch: using *any* pattern block on a track costs that track a fixed amount of extra
+    decode-loop code (`PATTERN_CODE_OVERHEAD_CHARS`, measured ~463 chars — see `scriptGen.ts`).
+    A track with only a small periodic win doesn't earn that back — confirmed empirically: an
+    earlier version that chose periodic encoding whenever it had *fewer tokens* (ignoring this
+    fixed cost) made some real files' *total generated output bigger* despite the RLE token count
+    going down. `encodeRuns` now estimates real exported-text size for both encodings
+    (`estimateDbTextLength`, mirrors `scriptGen.ts`'s actual `db` chunking) including that fixed
+    cost, and only picks periodic if it's genuinely smaller *for that track*. With this fix,
+    periodic encoding measured strictly better-or-equal to plain RLE on every real test file
+    (never a regression), 1.7-3.1% smaller total output on files with real repeating sequences and
+    identical to plain RLE otherwise.
+- **`midiExtract.ts`** — turns a parsed `Midifile` into the per-step arrays the rest of the app
+  uses:
+  - `getTempo` pulls the tempo meta-event from track 0 (falling back to the MIDI spec default of
     120 BPM if none exists) and converts µs-per-beat into the generated script's tempo units by
     multiplying BPM by `STEPS_PER_BEAT` (10).
-  - `getnotes` groups every `noteOn`/`noteOff` event by the pair **(raw track chunk index,
-    MIDI channel)** — not by track index alone, and not by channel alone. Both simpler groupings
-    are real bugs on real files: a MIDI *track chunk* and a MIDI *channel* aren't the same thing.
-    A track-index-only grouping (the original design) breaks on format-0 files, which put an
-    entire multi-instrument song in one single track chunk multiplexing up to 16 channels — every
-    instrument's noteOn/noteOff clobbered one shared `currentNote`, so the whole song loaded as
-    one garbled channel (found via `The-Rhythm-Of-The-Night-3.mid`, format 0, 13 channels in one
-    chunk). A channel-only grouping (a first attempt at the fix) breaks the *other* way on format-1
-    files that legitimately reuse a channel across several distinct instrument tracks — real
-    orchestral scores can have more instrument parts than MIDI's 16-channel limit, e.g.
-    `Bolero-Ravel.mid` declares 3 separate `*Flutes` tracks all on channel 0 — grouping by channel
-    alone would merge those back into one clobbered line, the same bug from the opposite
-    direction. Grouping by the (track,channel) pair handles both: a format-0 file still splits by
-    channel (only one track index exists), while a file with real per-track channel reuse keeps
-    each track chunk's own instrument separate. For the common case (one channel per track, true
-    of most files this project was tested against before these two), this reproduces the original
-    per-track grouping exactly. Per matching group, walks its events in file order and, using
-    each event's tick position converted to output steps via `ticksPerBeat`/`STEPS_PER_BEAT`,
-    produces one array entry per output step — holding the currently-sounding note (or `-1` for
-    silence) across however many steps elapsed before the next event. This is what encodes real
-    note duration and rests into the output, not just a per-event dump. Percussion-channel (index
-    9, i.e. GM channel 10) events are treated like any other group's notes (held note set on
-    noteOn, cleared on noteOff, reusing the raw GM drum note number as the "pitch") — this used to
-    `continue` past percussion noteOn/noteOff entirely, silently exporting/playing pure-percussion
-    tracks as one long rest, until a real file (`Rainbow Tylenol.mid`) whose drums were the only
-    thing sounding during long melodic rests made the resulting silence obvious. A group is
-    percussion iff its channel is 9 — exact by construction now, whereas the old per-track
-    `hasPercussionEvent` flag could be wrongly set by a single incidental channel-9 event mixed
-    into an otherwise-melodic track. `STEPS_PER_BEAT` must stay in sync between this function and
-    `GetTempo` — it's the shared time resolution both assume, and also what the piano roll
-    editor's grid columns are quantized to.
-  - `WaveformId`/`WAVEFORM_PATHS` — square/saw/tri/sine/noise mapped to their `synth/*.wav`
-    resource paths, confirmed against the real in-game sound browser (not just inferred from
-    source — `cl_spuvm.lua`'s `VM:Reset()` only auto-loads square/saw/tri/sine into the 4 default
-    slots, but this project's generator always `WSET`s its own explicit resource per channel
-    anyway, so it isn't limited to those 4). Per the user, uses the plain unprefixed files
-    (`synth/sine.wav` etc. — square/saw/tri/sine all have one) rather than the also-real
-    `_440`/`_880`/`_1760` precisely-pitched variants, for simplicity — meaning their actual native
-    pitch is unverified (see `BASE_FREQUENCY`'s comment in `player.ts`). `noise` → `synth/pink_
-    noise.wav`, the default for percussion tracks (see `isPercussion` below) since a noise sample
-    is far more percussion-appropriate than a tuned tone. Shared between script generation here,
-    `player.ts`'s oscillator-type mapping, and `pianoRoll.ts`'s waveform dropdown.
+  - `getnotes` groups every `noteOn`/`noteOff` event (plus sustain-pedal and all-notes-off
+    controller events, see below) by the pair **(raw track chunk index, MIDI channel)** — not by
+    track index alone, and not by channel alone. Both simpler groupings are real bugs on real
+    files: a MIDI *track chunk* and a MIDI *channel* aren't the same thing. A track-index-only
+    grouping (the original design) breaks on format-0 files, which put an entire multi-instrument
+    song in one single track chunk multiplexing up to 16 channels — every instrument's
+    noteOn/noteOff clobbered one shared `currentNote`, so the whole song loaded as one garbled
+    channel (found via `The-Rhythm-Of-The-Night-3.mid`, format 0, 13 channels in one chunk). A
+    channel-only grouping (a first attempt at the fix) breaks the *other* way on format-1 files
+    that legitimately reuse a channel across several distinct instrument tracks — real orchestral
+    scores can have more instrument parts than MIDI's 16-channel limit, e.g. `Bolero-Ravel.mid`
+    declares 3 separate `*Flutes` tracks all on channel 0 — grouping by channel alone would merge
+    those back into one clobbered line, the same bug from the opposite direction. Grouping by the
+    (track,channel) pair handles both: a format-0 file still splits by channel (only one track
+    index exists), while a file with real per-track channel reuse keeps each track chunk's own
+    instrument separate. For the common case (one channel per track), this reproduces the original
+    per-track grouping exactly. Per matching group, walks its events in file order and, using each
+    event's tick position converted to output steps via `ticksPerBeat`/`STEPS_PER_BEAT`, produces
+    one array entry per output step — holding the currently-sounding note (or `-1` for silence)
+    across however many steps elapsed before the next event. `STEPS_PER_BEAT` must stay in sync
+    between this function and `getTempo` — it's the shared time resolution both assume, and also
+    what the piano roll editor's grid columns are quantized to.
+  - **Held-note stack, not a single `currentNote`** (2026-08-26). A group tracks `heldNotes: []`
+    (most-recently-pressed last - "last note held wins", matching this project's one-pitch-per-
+    channel export model) instead of one bare `currentNote` that any `noteOff` used to clear
+    unconditionally. That old behavior was a real, common-case bug: real MIDI files very often
+    encode legato/overlapping notes as `noteOn(next)` arriving at (or just before) the *same tick*
+    as `noteOff(previous)` - the old code would process the noteOn (correctly starting the new
+    note) and then immediately process the noteOff for the *different*, no-longer-current note,
+    which unconditionally reset `currentNote` to `-1` anyway, inserting a spurious silent gap
+    after nearly every note. Found via `Rainbow Tylenol.mid`'s own melody track, which went from
+    238/2410 non-rest steps (10%) to 2410/2410 (100%, fully continuous) once fixed - the "gap after
+    every note" pattern was destroying legato throughout, not just in some rare edge case. Now a
+    `noteOff` only changes what's audible if it releases the note actually on top of the stack;
+    releasing an older still-technically-held note (overlap/chord) just removes it from the stack.
+    Stress-tested against a real file with overlap depth 2086 on one channel (a different "Bad
+    Apple" rip than the one already in the regression set, `Bad Apple!!.mid`).
+  - **All Notes Off / All Sound Off** (GM controller 123/120) clears the whole held-note stack and
+    silences the group — not one of the four spec-compliance buckets originally scoped, but a
+    natural, tightly-coupled addition to the same held-note-stack rewrite (same event loop, same
+    state), called out explicitly here rather than folded in silently.
+  - **Sustain pedal** (controller 64, ≥64 = down): a `noteOff` that arrives while the pedal is down
+    doesn't touch `heldNotes` at all (stays audible) - it's added to a separate `sustainedNotes`
+    set instead, and only actually removed from `heldNotes` (with `currentNote` recomputed from
+    the new stack top) once the pedal lifts. A real `noteOn` always takes effect immediately
+    regardless of pedal state (interrupts sustain) and clears any pending sustain-release for that
+    note number. Real test coverage: `A-Team.mid` has 12 real sustain events.
+  - **A group is only exported if it actually sounds a note** (`track.some(v => v !== -1)`, not
+    just `track.length > 0`) - broadening the event filter to also capture sustain/all-notes-off
+    controller events means a channel using *only* those (no real noteOn ever) now forms its own
+    group too, which would otherwise produce an all-silent phantom track (caught during this same
+    change's own testing - the same class of wasted-channel issue the track/channel-grouping fix
+    eliminated for metadata-only track chunks, from a different cause).
+  - Percussion-channel (index 9, i.e. GM channel 10) events flow through the exact same held-note-
+    stack logic as any other group (reusing the raw GM drum note number as the "pitch") - this used
+    to `continue` past percussion noteOn/noteOff entirely, silently exporting/playing pure-
+    percussion tracks as one long rest, until a real file (`Rainbow Tylenol.mid`) whose drums were
+    the only thing sounding during long melodic rests made the resulting silence obvious. A group
+    is percussion iff its channel is 9 — exact by construction, not an incidentally-set flag.
+- **`scriptGen.ts`** — HLZASM text generation only, no MIDI-domain knowledge beyond the
+  `WaveformId`/`usesPattern` shapes it's handed:
   - `CreateDBLines` pads every track to the same total duration (with `-1`, so the whole ensemble
     loops together in sync rather than each track wrapping back to its own start at a different
-    real time), then encodes each padded track via `encodeRuns` before chunking into ZSPU
-    `db ...;` data-statement lines (32 values/line). Returns `{dblines, usesPattern}` -
-    `usesPattern[i]` says whether track `i`'s encoding contains a periodic-pattern block (see
-    below), which `CreateFileString`/`constructLoopBlocks` need to know which decode code to emit
-    for that track. `CreateDBLines` doesn't mutate the array passed in.
-  - `encodeRuns(track)` picks between two encodings of one track's per-step notes, whichever
-    produces smaller *exported text* for that track:
-    - **Plain run-length**: flat `[note,count, note,count, ...]` pairs. Real measured win: most
-      held notes span many consecutive steps at `STEPS_PER_BEAT` quantization, so this compresses
-      7-9x on real songs (`Bad Apple.mid`: 64,376 raw cells → 7,018; `Bolero-Ravel.mid`: 265,330 →
-      35,222) — the SPU's default memory model is 128K cells, so a large multi-track song can
-      genuinely fail to fit (plausibly manifesting as the chip not starting at all) without this.
-    - **Periodic-pattern** (`encodePeriodicRuns`): plain RLE does nothing for a short repeating
-      sequence (e.g. a 4-step arpeggio `2, -1, 3, 33, 2, -1, 3, 33, ...`) - no single value
-      repeats, so every step becomes its own `[note,1]` pair, roughly *doubling* size instead of
-      shrinking it. This greedily also tries periods 2..`MAX_PATTERN_PERIOD` (32) at each
-      position and, if a period repeats at least twice, can instead emit a single
-      `[PATTERN_MARK(-2), periodLength, ...periodValues, repeatCount]` block. Found via a real
-      file (`Intensive Care Unit TheVocoderGuy.mid`) with exactly this kind of oscillating
-      sequence in its data.
-    - The catch: using *any* pattern block on a track costs that track a fixed amount of extra
-      decode-loop code (`PATTERN_CODE_OVERHEAD_CHARS`, measured ~463 chars — the `PATTERN_MARK`
-      branch plus 3 extra per-track variables). A track with only a small periodic win doesn't
-      earn that back — confirmed empirically: an earlier version that chose periodic encoding
-      whenever it had *fewer tokens* (ignoring this fixed cost) made some real files' *total
-      generated output bigger* despite the RLE token count going down, because tracks with a
-      trivial periodic saving still paid the full code cost. `encodeRuns` now estimates real
-      exported-text size for both encodings (`estimateDbTextLength`, mirrors `CreateDBLines`'
-      actual `db` chunking) including that fixed cost, and only picks periodic if it's genuinely
-      smaller *for that track*. With this fix, periodic encoding measured strictly
-      better-or-equal to plain RLE on every real test file (never a regression), 1.7-3.1% smaller
-      total output on files with real repeating sequences (`Intensive Care Unit
-      TheVocoderGuy.mid`, `Bolero-Ravel.mid`) and identical to plain RLE otherwise.
+    real time), then encodes each padded track via `rle.ts`'s `encodeRuns` before chunking into
+    ZSPU `db ...;` data-statement lines (32 values/line). Returns `{dblines, usesPattern}` -
+    `usesPattern[i]` says whether track `i`'s encoding contains a periodic-pattern block, which
+    `CreateFileString`/`constructLoopBlocks` need to know which decode code to emit for that
+    track. `CreateDBLines` doesn't mutate the array passed in.
   - `CreateFileString(dblinesin, usesPattern, tempo, waveforms, volumes)` assembles the full ZSPU
     script: per-channel `wset`/`chwave`/`chvolume`/`chstart` setup blocks (one **named wave string
     var per track**, e.g. `wave0`/`wave1`/..., each bound to that track's chosen waveform — not a
@@ -311,7 +368,7 @@ Source lives in `src/`:
   away to the dropped file.
 
 When changing the generated ZSPU script format, `constructBodyOfFile` and `constructLoopBlocks` in
-`utilityfunctions.ts` are the two functions that hand-emit the ZSPU source text — the ZSPU
+`scriptGen.ts` are the two functions that hand-emit the ZSPU source text — the ZSPU
 language itself (`fpwr`, `chpitch`, `wset`, `chwave`, `chvolume`, `chstart`, `timer`, etc.) is not
 implemented here, only text-generated as a target format for the Lua entity linked above. The full
 language/instruction-set reference (it's called HLZASM, not "ZSPU bytecode") lives in a separate
