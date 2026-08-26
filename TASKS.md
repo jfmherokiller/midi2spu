@@ -12,11 +12,14 @@ changes, so a fresh session (or a different agent) can pick up without replaying
 - Real-world `.mid` test files live at `G:\My Drive\Public\midi` on the user's machine (Google
   Drive mount) — copy into the session scratchpad before uploading via browser automation. The
   standing regression set for anything touching MIDI parsing or the export encoding:
-  `A-Team.mid` (small smoke test), `Bolero-Ravel.mid` (26 tracks, layout/scale stress test),
+  `A-Team.mid` (small smoke test), `Bolero-Ravel.mid` (26 tracks sharing only 16 MIDI channels —
+  layout/scale stress test AND the file that catches channel-reuse regressions),
   `Bad Apple.mid` (output-size stress test), `Rainbow Tylenol.mid` (percussion-heavy),
-  `Intensive Care Unit TheVocoderGuy.mid` (short repeating note sequences). When changing the
-  export encoding or codegen, check generated output size on *all five*, not just the file that
-  motivated the change — see the periodic-RLE lesson below.
+  `Intensive Care Unit TheVocoderGuy.mid` (short repeating note sequences),
+  `The-Rhythm-Of-The-Night-3.mid` (format-0, 13 channels in one track chunk — catches
+  track/channel-grouping regressions). When changing the export encoding, codegen, or `getnotes()`
+  itself, check generated output (track count + size) on *all six*, not just the file that
+  motivated the change — see the periodic-RLE and track/channel-grouping lessons below.
 - User has Garry's Mod running for real in-game testing but the actual generated HLZASM has never
   been verified running inside the real ZSPU chip in-game — only via a Node harness that
   re-implements the same encode logic, a round-trip decode simulator matching the generated
@@ -25,6 +28,14 @@ changes, so a fresh session (or a different agent) can pick up without replaying
 
 ## Done (most recent first)
 
+- **Track/channel grouping fix** (commits `f5367b4`, `6802d96`, unpushed) — `getnotes()` used to
+  key its decode state off the raw MIDI track chunk index, assuming one instrument per track.
+  Broke two ways on real files: a format-0 file (`The-Rhythm-Of-The-Night-3.mid`, whole song in
+  one track chunk multiplexing 13 channels) loaded as one garbled channel; a first-attempt fix
+  (group by channel alone) would have broken `Bolero-Ravel.mid` instead (26 instrument tracks
+  legitimately share only 16 channels — 3 separate flute parts all declared on channel 0). Fixed
+  by grouping by the *(track,channel)* pair, which handles both correctly. See `CLAUDE.md`'s
+  `getnotes` section for the full mechanism.
 - **WAV export** (commit pending as of writing this) — "Export .wav" button renders the current
   song (respecting mute/solo/per-track waveform/volume via `getAudibleSong`, same as the `.txt`
   export) to a downloadable `.wav` using `OfflineAudioContext` + a hand-rolled PCM16 encoder
@@ -53,7 +64,7 @@ changes, so a fresh session (or a different agent) can pick up without replaying
 
 ## Known gaps / not yet done
 
-- **4 commits unpushed** as of 2026-08-26 (`b97d80a`..`8dc3dd5`) — ask the user before pushing,
+- **8 commits unpushed** as of 2026-08-26 (`b97d80a`..`6802d96`) — ask the user before pushing,
   don't do it automatically.
 - Real in-game verification of generated HLZASM has never been done (see above) — everything
   verified so far is via reimplementation/simulation, not the actual Wiremod ZSPU compiler+VM.
