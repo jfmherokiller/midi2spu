@@ -65,6 +65,16 @@ Source lives in `src/`:
     targets. If a channel event afterward still tries running status with nothing to reuse, it now
     throws a clear "running status used without a preceding status byte" error instead of silently
     computing `NaN`-derived fields from an `undefined` reused status byte.
+  - **SMPTE time division is parsed, not rejected** (2026-08-26). `MidiHeader.division` is now a
+    discriminated union (`{type:"ppqn", ticksPerBeat}` or `{type:"smpte", framesPerSecond,
+    ticksPerFrame}`, from `midiTiming.ts`) instead of a bare `ticksPerBeat: number` — the
+    constructor used to `throw` outright whenever the time-division field's top bit was set. SMPTE
+    files have no beat/tempo concept (a fixed real-time clock instead — frame rate stored as a
+    negative two's-complement byte, -24/-25/-29/-30, plus ticks/frame), so this is a genuinely
+    different timing model, not just a parsing detail — see `midiExtract.ts` for how `getnotes()`/
+    `getTempo()` branch on it. Verified against a hand-built synthetic SMPTE file (no real one
+    exists anywhere in the user's ~2,788-file collection, confirmed via a full survey) since real
+    fixtures aren't available for this case.
   - **Meta events tolerate a declared length that doesn't match the field count.** `sequenceNumber`
     /`midiChannelPrefix`/`setTempo`/`smpteOffset`/`timeSignature`/`keySignature` used to `throw` on
     any length mismatch. Found via two real files (`Moveslikejagger.mid` and a variant) whose
@@ -76,6 +86,13 @@ Source lives in `src/`:
     regardless of how many fields were actually read - correctness of *stream position* for every
     later event matters far more than getting a rarely-used meta event's exact field values right
     for a malformed file.
+- **`midiTiming.ts`** — `MidiDivision` (the discriminated union above) and
+  `ticksToStepsFloat(division, stepsPerBeat, deltaTicks)`, the one function that converts an
+  elapsed tick count to elapsed output steps for *either* timing model. Shared by `midiExtract.ts`'s
+  `getnotes()` and (once Phase D lands) the tempo-curve builder, so both use the identical timing
+  math regardless of which kind of file this is — the only such call site before this existed
+  inline inside `getnotes()`. Also exports `SMPTE_STEPS_PER_SECOND` (20 — chosen to match PPQN's
+  resolution at a common 120bpm: `STEPS_PER_BEAT(10) * 120bpm / 60s`, not a spec value).
 - **`midiConstants.ts`** — small shared leaf constants with no logic: `PERCUSSION_CHANNEL` (GM
   channel 10, 1-indexed, so index 9 here), and `WaveformId`/`WAVEFORM_PATHS` (square/saw/tri/sine/
   noise mapped to their `synth/*.wav` resource paths, confirmed against the real in-game sound
@@ -118,7 +135,12 @@ Source lives in `src/`:
   uses:
   - `getTempo` pulls the tempo meta-event from track 0 (falling back to the MIDI spec default of
     120 BPM if none exists) and converts µs-per-beat into the generated script's tempo units by
-    multiplying BPM by `STEPS_PER_BEAT` (10).
+    multiplying BPM by `STEPS_PER_BEAT` (10). For an SMPTE-divided file (`midi.header.division.type
+    === "smpte"`), skips all of that — SMPTE files have no beat/tempo concept at all, so any
+    `setTempo` events present are ignored, and this returns a fixed effective tempo derived from
+    `midiTiming.ts`'s `SMPTE_STEPS_PER_SECOND` instead (`60 * SMPTE_STEPS_PER_SECOND`, chosen so
+    the generated script's `tempo()` busy-wait exactly matches one SMPTE-quantized step's real
+    duration).
   - `getnotes` groups every `noteOn`/`noteOff` event (plus sustain-pedal and all-notes-off
     controller events, see below) by the pair **(raw track chunk index, MIDI channel)** — not by
     track index alone, and not by channel alone. Both simpler groupings are real bugs on real
@@ -220,7 +242,17 @@ Source lives in `src/`:
   - `loadMidi(buffer): Song` — parses + calls `getnotes()`, defaults every track to volume `0.5`,
     unmuted, not soloed, and waveform `"sine"` — except percussion tracks (`isPercussion[i]`),
     which default to `"noise"` instead (a real user-editable default; percussion note data is real
-    now too, since `getnotes()` no longer skips percussion-channel noteOn/noteOff events).
+    now too, since `getnotes()` no longer skips percussion-channel noteOn/noteOff events). Also
+    populates `Song.warnings: string[]` — currently only ever set for `midi.header.formatType ===
+    2` (sequential-pattern files). Format 2's tracks are independent patterns meant to be
+    *triggered on demand* (drum-machine-style pattern banks), not concatenated into one song - this
+    project's whole export model (every track loops forever, simultaneously, from step 0) has no
+    single obviously-correct mapping onto "play pattern 1, then pattern 2", and real format-2 files
+    are effectively nonexistent for this project's use case (confirmed zero in a full survey of the
+    user's ~2,788-file collection). So this deliberately does *not* attempt real sequential
+    playback (tracks still get treated as simultaneous, same as any other file) - it just surfaces
+    a warning instead of silently producing a likely-wrong result. `app.ts` shows `warnings` in a
+    `#warning` banner above the controls (hidden when empty) on every file load.
   - `isTrackAudible(song, index)` — a track counts as audible (plays/exports) if it isn't muted,
     and — if *any* track has `solo` set — it's one of the soloed ones. Explicit mute always beats
     solo (standard DAW convention: muting a soloed track still silences it).
@@ -352,6 +384,7 @@ Source lives in `src/`:
   handle for the playhead-follow loop. Both the `#file` `<input>`'s `change` event and
   drag-and-drop onto `#dropzone` (dragover/dragleave toggle a `.dragover` CSS class; drop reads
   `evt.dataTransfer.files[0]`) funnel into a shared `loadFile(file: File)` that calls `loadMidi`,
+  shows/hides the `#warning` banner based on `song.warnings` (see `processing.ts`'s `loadMidi`),
   reveals the Play window's `#controls` and the Piano Roll window, and constructs a `PianoRoll`.
   Play constructs a fresh `ZspuPlayer` from `getAudibleSong(song)` (muted/soloed-out tracks never
   reach playback) and starts a `followPlayhead()` `requestAnimationFrame` loop polling
