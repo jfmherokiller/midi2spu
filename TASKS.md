@@ -18,25 +18,28 @@ changes, so a fresh session (or a different agent) can pick up without replaying
   file that catches channel-reuse regressions), `Bad Apple.mid` (output-size stress test),
   `Rainbow Tylenol.mid` (percussion-heavy), `Intensive Care Unit TheVocoderGuy.mid` (short
   repeating note sequences), `The-Rhythm-Of-The-Night-3.mid` (format-0, 13 channels in one track
-  chunk — catches track/channel-grouping regressions), plus 3 more added 2026-08-26 from a full
-  collection survey (see below): `bohemian1.mid` (421 real `setTempo` events — mid-song tempo
-  regression fixture), `tom_petty-free_fallin.mid` (real overlapping/legato notes, moderate depth
-  28 on one channel), `Bad Apple!!.mid` (a *different* Bad Apple rip than the one above - extreme
-  overlap depth 2086 on one channel, stress-tests the held-note-stack fix). When changing the
-  export encoding, codegen, or `getnotes()` itself, check generated output (track count + size) on
-  *all nine*, not just the file that motivated the change — see the periodic-RLE and
-  track/channel-grouping lessons below.
+  chunk — catches track/channel-grouping regressions), plus 4 more added 2026-08-26 from a full
+  collection survey (see below): `bohemian1.mid` (421 real `setTempo` events, 73 distinct BPM
+  values 30-208 — the mid-song-tempo regression fixture), `tom_petty-free_fallin.mid` (real
+  overlapping/legato notes, moderate depth 28 on one channel), `Bad Apple!!.mid` (a *different*
+  Bad Apple rip than the one above - extreme overlap depth 2086 on one channel, stress-tests the
+  held-note-stack fix), `Moveslikejagger.mid` (malformed `timeSignature` meta event - used to
+  crash the parser outright). When changing the export encoding, codegen, or `getnotes()` itself,
+  check generated output (track count + size) on *all ten*, not just the file that motivated the
+  change — see the periodic-RLE and track/channel-grouping lessons below.
 - **Full collection survey (2026-08-26)**: wrote a one-off Node script (parses every file with the
   compiled `MidiFile.js`, classifies format/SMPTE-bit/tempo-event-count/sustain-CC64-count/max
-  note-overlap-depth per file) and ran it across all 2,788 files. Confirmed **zero** format-2 and
-  **zero** SMPTE-divided files exist in the whole collection - real fixtures for those two are a
-  dead end, synthetic `.mid` byte buffers are required. Also surfaced a real parser bug: exactly 2
-  files (`Moveslikejagger.mid`, `maroon_5-moves_like_jagger_feat_christina_aguilera.mid`) fail to
-  parse at all - `"Expected length for timeSignature event is 4, got 2"` - a non-standard/malformed
-  but real-world timeSignature meta event the parser is too strict about. Worth fixing as part of
-  Phase B's robustness work even though it wasn't one of the original four buckets (same spirit:
-  don't crash on a real file). This full survey result isn't saved anywhere reusable - rerun the
-  script (or ask to) if a future task needs different candidate files from the collection.
+  note-overlap-depth per file) and ran it across all 2,788 files (recursively - an initial
+  non-recursive pass only found 630). Confirmed **zero** format-2 and **zero** SMPTE-divided files
+  exist in the whole collection - real fixtures for those two are a dead end, synthetic `.mid`
+  byte buffers were used instead (see Phase C below). Found real candidates for everything else:
+  417 files with 2+ tempo events, 135 with meaningful sustain-pedal use, 1238 with real
+  overlapping notes, and exactly 2 unparseable files (both the same underlying malformed
+  `timeSignature` bug, now fixed). This full survey result isn't saved anywhere reusable beyond
+  the 4 files pulled into the regression set above - rerun the script (or ask to) if a future task
+  needs different candidates from the collection. (Note: the survey was first attempted via a
+  Workflow while still in plan mode and correctly refused - subagents inherit the same read-only
+  restriction, so this needed exiting plan mode first.)
 - User has Garry's Mod running for real in-game testing but the actual generated HLZASM has never
   been verified running inside the real ZSPU chip in-game — only via a Node harness that
   re-implements the same encode logic, a round-trip decode simulator matching the generated
@@ -45,6 +48,29 @@ changes, so a fresh session (or a different agent) can pick up without replaying
 
 ## Done (most recent first)
 
+- **Fuller MIDI spec compliance** (started/finished 2026-08-26, plan at
+  `C:\Users\peter\.claude\plans\replicated-giggling-acorn.md`) — six sub-parts, all implemented
+  and verified:
+  - File reorg: split `utilityfunctions.ts` into `rle.ts`/`midiConstants.ts`/`midiExtract.ts`/
+    `scriptGen.ts` (commit `8b8c257`), byte-identical output verified first before anything else.
+  - Robustness (`MidiFile.ts`): skip unknown chunks, handle system-common bytes 0xF1-0xF6, reset
+    running status after 0xF0+ events, tolerate malformed meta-event lengths (found + fixed a real
+    crash on 2 real files this way, not originally scoped) (`a92e471`/`29846c7`).
+  - `getnotes()` held-note-stack rewrite: fixes a real, common overlapping/legato-note bug (any
+    noteOff used to silence the channel even for a note that wasn't currently sounding - one real
+    file's melody track went from 10% to 100% non-rest coverage once fixed), plus All Notes
+    Off/All Sound Off (CC 120/123) and sustain pedal (CC64) on the same rewrite (`a92e471`).
+  - SMPTE time division: real support (`MidiHeader.division` discriminated union, `midiTiming.ts`),
+    not just tolerating the header field - genuinely different timing model (`deec1a3`).
+  - Format 2: detect + `Song.warnings`/`#warning` UI banner, deliberately no attempt at real
+    sequential-pattern playback (scope decision - see the plan's Context section) (`deec1a3`).
+  - Mid-song tempo changes: `getTempoTrack()` (one scaled-BPM value per step, not a song-wide
+    constant), `player.ts`'s `cumulativeStepTime` prefix-sum + binary search for correct real-time
+    scheduling, `scriptGen.ts`'s `temposeq` pseudo-track reusing the exact same RLE/pattern-block
+    machinery as a note track (`5de0f1b`/`267c6a9`). Verified against a real 421-tempo-event file.
+  - Full survey of the user's ~2,788-file MIDI collection along the way (see repo/session context
+    above) - found real regression fixtures for everything except format-2/SMPTE (confirmed zero
+    real examples of either exist in the collection).
 - **Track/channel grouping fix** (commits `f5367b4`, `6802d96`, pushed) — `getnotes()` used to
   key its decode state off the raw MIDI track chunk index, assuming one instrument per track.
   Broke two ways on real files: a format-0 file (`The-Rhythm-Of-The-Night-3.mid`, whole song in
@@ -79,54 +105,23 @@ changes, so a fresh session (or a different agent) can pick up without replaying
 - Full toolchain modernization: Vite + modern TS, ArrayBuffer-based MIDI parsing, real
   deltaTime-based note timing (all pushed, predates this file).
 
-## In-flight: fuller MIDI spec compliance (started 2026-08-26)
+## Testing technique notes (keep using these)
 
-Full plan at `C:\Users\peter\.claude\plans\replicated-giggling-acorn.md` (this machine only, not in
-the repo). Checked off as each phase is implemented **and** verified, not just implemented:
-
-- [x] **File reorg** — split `utilityfunctions.ts` into `rle.ts`, `midiConstants.ts`,
-      `midiExtract.ts`, `scriptGen.ts` (commit `8b8c257`). Verified byte-identical full generated
-      output (not just size) on all 9 files now in the regression set. `midiTiming.ts` deferred to
-      when Phase C (SMPTE) actually needs it, per the plan.
-- [x] **Phase B** — robustness (`MidiFile.ts`: skip unknown chunks, handle system-common bytes
-      0xF1-0xF6, reset running status after 0xF0+ events, tolerate malformed meta-event lengths)
-      + `getnotes()` held-note-stack fix (overlapping/legato notes) + All Notes Off/All Sound Off
-      (CC 120/123). Commits `a92e471` (fix), `29846c7` (docs). Also fixed a real crash on 2 files
-      (malformed `timeSignature` length) discovered along the way, not originally scoped but same
-      "don't crash on a real file" spirit.
-- [x] **Phase E** — sustain pedal (CC64), implemented together with Phase B since it shares the
-      exact same held-note-stack rewrite (same commits as above). Real test file: `A-Team.mid`
-      (12 real CC64 events, confirmed).
-- [x] **Phase C — SMPTE** — real time-division support (`MidiHeader.division` discriminated union,
-      `midiTiming.ts`'s `ticksToStepsFloat`, `SMPTE_STEPS_PER_SECOND=20`). Commits `deec1a3`
-      (fix), `7bb4056` (docs). No real SMPTE file exists anywhere in the user's collection
-      (confirmed via full survey) - verified against a hand-built synthetic fixture
-      (`buildSynthetic.mjs`, not saved anywhere permanent - rebuild if needed again) instead.
-- [x] **Phase C — format 2** — detect + UI warning (`Song.warnings`, `#warning` banner in
-      `index.html`/`app.ts`), no attempt at real sequential pattern playback (scope decision, see
-      plan's Context section for why). Same commits as SMPTE above. Also zero real format-2 files
-      in the collection - verified with a hand-built synthetic fixture, live in browser (warning
-      shows/hides correctly).
-- [ ] **Phase D — mid-song tempo changes** — `getTempoTrack()`, `Song.tempo`→`Song.tempoTrack`,
-      `player.ts` real-time scheduling via `cumulativeStepTime` prefix-sum + binary search, dynamic
-      `tempo(curtempo)` in generated script. Biggest/last phase - do after B/C/E stabilize
-      `getnotes()`. No real multi-tempo file found yet in the checked subset - may need synthetic.
-
-**Testing note for this work specifically**: clicking Download .txt / Export .wav for real in
-Brave triggers a native save dialog/notification that hangs browser automation. When verifying via
-claude-in-chrome, patch BOTH `URL.createObjectURL` (capture the Blob) AND
+**Avoiding real downloads during browser testing**: clicking Download .txt / Export .wav for real
+in Brave triggers a native save dialog/notification that hangs browser automation. When verifying
+via claude-in-chrome, patch BOTH `URL.createObjectURL` (capture the Blob) AND
 `HTMLAnchorElement.prototype.click` (no-op it) via `javascript_tool` before clicking those buttons,
 so `downloadBlob`'s `link.click()` never fires a real save. Prefer the Node harness (compile +
 run against real `.mid` files, no browser needed) for pure data-correctness checks; only reach for
 the browser to confirm UI/playback/no-console-errors.
 
+**Plan mode blocks subagents too**: a Workflow/Agent spawned while in plan mode inherits the same
+read-only restriction as the main session - it can't run Bash/Node to actually do research that
+needs script execution (e.g. parsing thousands of files). If a plan needs that kind of research,
+either do it before entering plan mode, or exit plan mode first and re-enter after.
+
 ## Known gaps / not yet done
 
-- Real-world files for the rarer spec-compliance cases (multi-tempo, format 2, SMPTE) weren't
-  found in the ~8 files checked so far this session; a full survey of the user's ~2,788-file
-  collection was attempted but blocked by plan mode (subagents inherit the same read-only
-  restriction, so a Workflow can't run the parsing harness either) - synthetic `.mid` fixtures are
-  the fallback for whichever categories a quick manual check of more real files doesn't turn up.
 - Real in-game verification of generated HLZASM has never been done (see above) — everything
   verified so far is via reimplementation/simulation, not the actual Wiremod ZSPU compiler+VM.
 - `BASE_FREQUENCY=880` in `player.ts` (native pitch of the plain unprefixed `synth/*.wav` files)
@@ -139,6 +134,8 @@ the browser to confirm UI/playback/no-console-errors.
 
 ## In progress / next up
 
-See "In-flight: fuller MIDI spec compliance" above — that's the current work. All 9 prior commits
-are pushed as of 2026-08-26; check `git log origin/master..HEAD` before assuming that's still
-true, and ask before pushing new work.
+Nothing in flight. The "fuller MIDI spec compliance" work (see Done above) is fully implemented,
+verified, and committed — 10 commits, all **unpushed** as of 2026-08-26 (`8b8c257`..`267c6a9`, on
+top of the 9 already-pushed commits from earlier that day). Ask the user before pushing; check
+`git log origin/master..HEAD` first to confirm this is still accurate. Next task is whatever the
+user asks for next.
