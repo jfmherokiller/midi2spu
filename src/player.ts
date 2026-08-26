@@ -19,6 +19,7 @@ const BASE_FREQUENCY = 880;
 const MAX_PITCH_PERCENT = 255;
 const NOISE_BUFFER_SECONDS = 2;
 const WAV_SAMPLE_RATE = 44100;
+const FALLBACK_SCALED_BPM = 1200; // 120bpm * STEPS_PER_BEAT(10), matches midiExtract.ts's default
 
 const OSCILLATOR_TYPES: Partial<Record<WaveformId, OscillatorType>> = {
     square: "square",
@@ -29,7 +30,6 @@ const OSCILLATOR_TYPES: Partial<Record<WaveformId, OscillatorType>> = {
 
 class ZspuPlayer {
     private tracks: number[][];
-    private tempo: number;
     private waveforms: WaveformId[];
     private volumes: number[];
     private audioContext: AudioContext | null = null;
@@ -40,15 +40,30 @@ class ZspuPlayer {
     private sources: AudioScheduledSourceNode[] = [];
     private endTimeout: number | null = null;
     private playStartTime: number | null = null;
-    private secondsPerStep = 0;
+    /* Prefix sum of each step's own real-time duration (60/scaledBpm seconds), built once from
+       tempoTrack so a mid-song tempo change actually changes playback speed instead of the whole
+       song playing at whatever the first tempo was. cumulativeStepTime[i] = wall-clock seconds
+       from step 0 to the *start* of step i; index `tracks`' max length is one past the last real
+       step, so its value is the total duration. Used identically by scheduleTrack (both live
+       play() and offline renderToWav()) and by getCurrentStep()'s reverse lookup. */
+    private cumulativeStepTime: number[];
     onEnded?: () => void;
 
-    constructor(tracks: number[][], tempo: number, waveforms: WaveformId[], volumes: number[]) {
+    constructor(tracks: number[][], tempoTrack: number[], waveforms: WaveformId[], volumes: number[]) {
         this.tracks = tracks;
-        this.tempo = tempo;
         this.waveforms = waveforms;
         this.volumes = volumes;
         this.trackScaling = 0.9 / Math.max(1, tracks.length);
+
+        const maxLength = Math.max(0, ...tracks.map(track => track.length));
+        const lastTempo = tempoTrack.length > 0 ? tempoTrack[tempoTrack.length - 1] : FALLBACK_SCALED_BPM;
+        this.cumulativeStepTime = [0];
+        let cumulative = 0;
+        for (let i = 0; i < maxLength; i++) {
+            const scaledBpm = tempoTrack[i] ?? lastTempo;
+            cumulative += 60 / scaledBpm;
+            this.cumulativeStepTime.push(cumulative);
+        }
     }
 
     private getMasterGain(audioContext: AudioContext): GainNode {
@@ -109,10 +124,9 @@ class ZspuPlayer {
         const gain = audioContext.createGain();
         gain.gain.setValueAtTime(0, startTime);
 
-        const secondsPerStep = 60 / this.tempo;
         for (let i = 0; i < track.length; i++) {
             const note = track[i];
-            const t = startTime + i * secondsPerStep;
+            const t = startTime + this.cumulativeStepTime[i];
             if (note === -1) {
                 gain.gain.setValueAtTime(0, t);
             } else {
@@ -143,11 +157,9 @@ class ZspuPlayer {
         this.audioContext = audioContext;
         const masterGain = this.getMasterGain(audioContext);
 
-        const secondsPerStep = 60 / this.tempo;
         const startTime = audioContext.currentTime + 0.05;
-        const duration = Math.max(...this.tracks.map(track => track.length)) * secondsPerStep;
+        const duration = this.cumulativeStepTime[this.cumulativeStepTime.length - 1];
         this.playStartTime = startTime;
-        this.secondsPerStep = secondsPerStep;
 
         for (let trackIndex = 0; trackIndex < this.tracks.length; trackIndex++) {
             const source = this.scheduleTrack(audioContext, masterGain, trackIndex, startTime);
@@ -182,7 +194,23 @@ class ZspuPlayer {
         if (this.playStartTime === null || !this.audioContext) return null;
         const elapsed = this.audioContext.currentTime - this.playStartTime;
         if (elapsed < 0) return 0;
-        return Math.floor(elapsed / this.secondsPerStep);
+        return this.stepAtElapsedTime(elapsed);
+    }
+
+    /* Binary search for the largest step index i such that cumulativeStepTime[i] <= elapsed -
+       the inverse of scheduleTrack's index-to-time lookup, needed because a variable tempo means
+       elapsed time no longer divides evenly into steps. */
+    private stepAtElapsedTime(elapsed: number): number {
+        let lo = 0, hi = this.cumulativeStepTime.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (this.cumulativeStepTime[mid] <= elapsed) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return lo;
     }
 
     /* Renders this song to a downloadable .wav using the same scheduling as live play() (see
@@ -193,8 +221,7 @@ class ZspuPlayer {
        per-track-normalized level (trackScaling) regardless of whatever the slider happened to be
        set to during a prior preview. */
     async renderToWav(): Promise<Blob> {
-        const secondsPerStep = 60 / this.tempo;
-        const duration = Math.max(...this.tracks.map(track => track.length)) * secondsPerStep;
+        const duration = this.cumulativeStepTime[this.cumulativeStepTime.length - 1];
         const totalFrames = Math.max(1, Math.ceil(duration * WAV_SAMPLE_RATE));
         const offlineContext = new OfflineAudioContext(1, totalFrames, WAV_SAMPLE_RATE);
 

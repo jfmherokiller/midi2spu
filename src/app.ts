@@ -95,7 +95,7 @@ window.onload = () => {
         const audible = getAudibleSong(song);
         if (audible.tracks.length === 0) return;
         player?.stop();
-        player = new ZspuPlayer(audible.tracks, audible.tempo, audible.waveforms, audible.volumes);
+        player = new ZspuPlayer(audible.tracks, audible.tempoTrack, audible.waveforms, audible.volumes);
         player.setVolume(volumeSlider.valueAsNumber);
         player.onEnded = () => {
             stopFollowingPlayhead();
@@ -136,7 +136,7 @@ window.onload = () => {
         exportWavButton.disabled = true;
         exportWavButton.textContent = "Rendering...";
         try {
-            const renderPlayer = new ZspuPlayer(audible.tracks, audible.tempo, audible.waveforms, audible.volumes);
+            const renderPlayer = new ZspuPlayer(audible.tracks, audible.tempoTrack, audible.waveforms, audible.volumes);
             const wavBlob = await renderPlayer.renderToWav();
             downloadBlob(wavBlob, "songtest.wav");
         } finally {

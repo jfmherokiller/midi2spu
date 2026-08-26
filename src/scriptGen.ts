@@ -1,6 +1,13 @@
 import {encodeRuns, PATTERN_MARK} from "./rle";
 import {WaveformId, WAVEFORM_PATHS} from "./midiConstants";
 
+interface NamedTrack {
+    /* Used both as the `db` block label (`${name}:`) and, combined with `suffix` below at the
+       call sites that need it, to derive the generated decode-state variable names. */
+    name: string;
+    values: number[];
+}
+
 function createWaveChannelBlocks(volumes:number[]) {
     let baseblock:string[] = [];
     for (let i = 0; i < volumes.length; i++) {
@@ -14,18 +21,21 @@ function createWaveChannelBlocks(volumes:number[]) {
     return baseblock;
 }
 
-function createDbLines(notes:number[][]) {
-    /* Every track is padded to the same total duration (with -1/silence) before encoding so the
-       whole ensemble loops together in sync, rather than each track wrapping back to its own
-       start at a different real time - see constructLoopBlocks for how each track's own
-       independent decode state uses this. */
-    let maxLength = Math.max(0, ...notes.map(track => track.length));
-    let paddedNotes = notes.map(track => {
-        let padded = track.slice();
-        while (padded.length < maxLength) {
-            padded.push(-1);
+/* Encodes any number of named per-step value tracks (note tracks, or the tempo pseudo-track - see
+   constructLoopBlocks) into ZSPU `db` data. Every track is padded/truncated to the same length
+   (with -1) before encoding so the whole ensemble loops together in sync, rather than each track
+   wrapping back to its own start at a different real time - see constructLoopBlocks for how each
+   track's own independent decode state uses this. Note: -1 padding is only meaningful for note
+   tracks (silence); the tempo pseudo-track must already be exactly the right length when passed
+   in (see processing.ts's generateScript), since -1 isn't a valid tempo value. */
+function createDbLines(namedTracks: NamedTrack[]) {
+    let maxLength = Math.max(0, ...namedTracks.map(t => t.values.length));
+    let padded = namedTracks.map(t => {
+        let values = t.values.slice(0, maxLength);
+        while (values.length < maxLength) {
+            values.push(-1);
         }
-        return padded;
+        return values;
     });
 
     let dblines:string[][] = [];
@@ -34,74 +44,100 @@ function createDbLines(notes:number[][]) {
        it, since that code is a fixed per-track cost that isn't worth paying on tracks encodeRuns
        didn't find a periodic win for (see encodeRuns' comment). */
     let usesPattern:boolean[] = [];
-    for (let notetracknum = 0; notetracknum < paddedNotes.length; notetracknum++) {
-        let pairs = encodeRuns(paddedNotes[notetracknum]);
-        usesPattern[notetracknum] = pairs.includes(PATTERN_MARK);
-        dblines[notetracknum] = [];
-        dblines[notetracknum].push(`track${notetracknum}:\n`);
+    for (let i = 0; i < padded.length; i++) {
+        let pairs = encodeRuns(padded[i]);
+        usesPattern[i] = pairs.includes(PATTERN_MARK);
+        dblines[i] = [];
+        dblines[i].push(`${namedTracks[i].name}:\n`);
         while (pairs.length) {
-            dblines[notetracknum].push("db ".concat(pairs.splice(0, 32).join(', ')).concat(";\n"));
+            dblines[i].push("db ".concat(pairs.splice(0, 32).join(', ')).concat(";\n"));
         }
-        dblines[notetracknum].push("db 0; // End string\n");
+        dblines[i].push("db 0; // End string\n");
     }
     return {dblines, usesPattern};
 }
 
-/* Each track decodes its own run-length pairs independently: while the current run/pattern still
-   has ticks remaining, just cycle through its held note(s); once it runs out, read the next
-   block header (wrapping to the start of its own array at its own tracklenN) and start counting
-   that one down. This replaces the old flat shared-index model (trackN[i], one shared i across
-   every track) - RLE blocks mean different tracks are independently partway through
-   different-length blocks at any given tick, so there's no single shared index that still makes
-   sense.
+/* Generates the per-tick decode logic for one RLE-encoded track, generalized over its variable
+   names so the exact same state machine drives both a note track (chpitch N afterward) and the
+   tempo pseudo-track (tempo(curtempo) afterward - see constructLoopBlocks). `valueVar` is the
+   name of the variable the decoded value ends up in (e.g. "note0" or "curtempo"); `suffix` names
+   every other piece of decode state for this track (idx${suffix}, remain${suffix}, tracklen
+   ${suffix}, and - only when usesPattern - patternlen/patternstart/patternpos${suffix}).
 
-   A block header is either a plain run [note,count] or, if the first value is PATTERN_MARK, a
+   While the current run/pattern still has ticks remaining, this just cycles through its held
+   value(s); once it runs out, it reads the next block header (wrapping to the start of its own
+   array at its own tracklen${suffix}) and starts counting that one down. Each track/tempo-curve
+   needs its own independent decode state like this since RLE blocks mean different tracks are
+   independently partway through different-length blocks at any given tick - there's no single
+   shared index that still makes sense (an early version of this generator had one, see git
+   history for the "solid tone" bug that caused).
+
+   A block header is either a plain run [value,count] or, if the first value is PATTERN_MARK, a
    repeating-sequence block [PATTERN_MARK, periodLength, ...periodValues, repeatCount] (see
    rle.ts's encodePeriodicRuns). Both are decoded through the same three pieces of state -
-   patternstartN (where the held value(s) begin), patternlenN (how many values to cycle through,
-   1 for a plain run), and patternposN (position within that cycle) - so noteN is always just
-   trackN[patternstartN+patternposN], cycling patternposN back to 0 every patternlenN ticks.
+   patternstart${suffix} (where the held value(s) begin), patternlen${suffix} (how many values to
+   cycle through, 1 for a plain run), and patternpos${suffix} (position within that cycle) - so
+   the decoded value is always just arr[patternstart+patternpos], cycling patternpos back to 0
+   every patternlen ticks.
 
-   This extra state (and the branch to check for PATTERN_MARK) is only emitted for tracks whose
-   encoding actually contains a pattern block (usesPattern[i]) - it's a fixed per-track code-size
-   cost, so tracks encodeRuns didn't find a periodic win for keep the plain two-variable decode
-   instead of paying for pattern support they don't use. */
+   The pattern-branch state (and the extra variable declarations it needs, see
+   constructBodyOfFile) is only emitted when usesPattern is true - it's a fixed code-size cost, so
+   a track/tempo-curve encodeRuns didn't find a periodic win for keeps the plain two-variable
+   decode instead of paying for pattern support it doesn't use. */
+function emitDecodeBlock(valueVar: string, suffix: string, arrName: string, usesPattern: boolean): string[] {
+    let lines: string[] = [];
+    if (usesPattern) {
+        lines.push("if (remain" + suffix + " <= 0) {\n");
+        lines.push("    if (" + arrName + "[idx" + suffix + "] == " + PATTERN_MARK + ") {\n");
+        lines.push("        patternlen" + suffix + " = " + arrName + "[idx" + suffix + "+1];\n");
+        lines.push("        patternstart" + suffix + " = idx" + suffix + "+2;\n");
+        lines.push("        idx" + suffix + " += 2;\n");
+        lines.push("        idx" + suffix + " += patternlen" + suffix + ";\n");
+        lines.push("        remain" + suffix + " = " + arrName + "[idx" + suffix + "];\n");
+        lines.push("        remain" + suffix + " *= patternlen" + suffix + ";\n");
+        lines.push("        idx" + suffix + " += 1;\n");
+        lines.push("    } else {\n");
+        lines.push("        patternlen" + suffix + " = 1;\n");
+        lines.push("        patternstart" + suffix + " = idx" + suffix + ";\n");
+        lines.push("        remain" + suffix + " = " + arrName + "[idx" + suffix + "+1];\n");
+        lines.push("        idx" + suffix + " += 2;\n");
+        lines.push("    }\n");
+        lines.push("    patternpos" + suffix + " = 0;\n");
+        lines.push("    if (idx" + suffix + " >= tracklen" + suffix + ") { idx" + suffix + " = 0; }\n");
+        lines.push("}\n");
+        lines.push(valueVar + " = " + arrName + "[patternstart" + suffix + "+patternpos" + suffix + "];\n");
+        lines.push("patternpos" + suffix + " += 1;\n");
+        lines.push("if (patternpos" + suffix + " >= patternlen" + suffix + ") { patternpos" + suffix + " = 0; }\n");
+        lines.push("remain" + suffix + " -= 1;\n");
+    } else {
+        lines.push("if (remain" + suffix + " <= 0) {\n");
+        lines.push("    " + valueVar + " = " + arrName + "[idx" + suffix + "];\n");
+        lines.push("    remain" + suffix + " = " + arrName + "[idx" + suffix + "+1];\n");
+        lines.push("    idx" + suffix + " += 2;\n");
+        lines.push("    if (idx" + suffix + " >= tracklen" + suffix + ") { idx" + suffix + " = 0; }\n");
+        lines.push("}\n");
+        lines.push("remain" + suffix + " -= 1;\n");
+    }
+    return lines;
+}
+
+/* usesPattern has one entry per note track (index 0..needed-1) plus one trailing entry
+   (usesPattern[needed]) for the tempo pseudo-track - see createDbLines' caller in
+   processing.ts's generateScript, which always appends the tempo curve as the last named track. */
 function constructLoopBlocks(needed:number, usesPattern:boolean[]) {
     let noteblocks:string[] = [];
+    /* Tempo is decoded and applied first each tick, in the same relative position the old literal
+       `tempo(N)` call used to occupy at the top of main() - just data-driven now instead of a
+       fixed constant, so playback speed can actually follow a mid-song tempo change instead of
+       using whatever the first tempo happened to be for the whole song. */
+    noteblocks.push("    // Tempo\n");
+    noteblocks = noteblocks.concat(emitDecodeBlock("curtempo", "tempo", "temposeq", usesPattern[needed]));
+    noteblocks.push("tempo(curtempo);\n");
+    noteblocks.push("\n");
+
     for (let i = 0; i < needed; i++) {
         noteblocks.push("    // Track " + i + "\n");
-        if (usesPattern[i]) {
-            noteblocks.push("if (remain" + i + " <= 0) {\n");
-            noteblocks.push("    if (track" + i + "[idx" + i + "] == " + PATTERN_MARK + ") {\n");
-            noteblocks.push("        patternlen" + i + " = track" + i + "[idx" + i + "+1];\n");
-            noteblocks.push("        patternstart" + i + " = idx" + i + "+2;\n");
-            noteblocks.push("        idx" + i + " += 2;\n");
-            noteblocks.push("        idx" + i + " += patternlen" + i + ";\n");
-            noteblocks.push("        remain" + i + " = track" + i + "[idx" + i + "];\n");
-            noteblocks.push("        remain" + i + " *= patternlen" + i + ";\n");
-            noteblocks.push("        idx" + i + " += 1;\n");
-            noteblocks.push("    } else {\n");
-            noteblocks.push("        patternlen" + i + " = 1;\n");
-            noteblocks.push("        patternstart" + i + " = idx" + i + ";\n");
-            noteblocks.push("        remain" + i + " = track" + i + "[idx" + i + "+1];\n");
-            noteblocks.push("        idx" + i + " += 2;\n");
-            noteblocks.push("    }\n");
-            noteblocks.push("    patternpos" + i + " = 0;\n");
-            noteblocks.push("    if (idx" + i + " >= tracklen" + i + ") { idx" + i + " = 0; }\n");
-            noteblocks.push("}\n");
-            noteblocks.push("note" + i + " = track" + i + "[patternstart" + i + "+patternpos" + i + "];\n");
-            noteblocks.push("patternpos" + i + " += 1;\n");
-            noteblocks.push("if (patternpos" + i + " >= patternlen" + i + ") { patternpos" + i + " = 0; }\n");
-            noteblocks.push("remain" + i + " -= 1;\n");
-        } else {
-            noteblocks.push("if (remain" + i + " <= 0) {\n");
-            noteblocks.push("    note" + i + " = track" + i + "[idx" + i + "];\n");
-            noteblocks.push("    remain" + i + " = track" + i + "[idx" + i + "+1];\n");
-            noteblocks.push("    idx" + i + " += 2;\n");
-            noteblocks.push("    if (idx" + i + " >= tracklen" + i + ") { idx" + i + " = 0; }\n");
-            noteblocks.push("}\n");
-            noteblocks.push("remain" + i + " -= 1;\n");
-        }
+        noteblocks = noteblocks.concat(emitDecodeBlock("note" + i, String(i), "track" + i, usesPattern[i]));
         noteblocks.push("note = 2;\n");
         noteblocks.push("fpwr note,(note" + i + "/12);\n");
         noteblocks.push("note /= 100;\n");
@@ -110,17 +146,16 @@ function constructLoopBlocks(needed:number, usesPattern:boolean[]) {
     }
     return noteblocks;
 }
-function constructBodyOfFile(numberOfTracks:number, tempo:number, waveforms:WaveformId[], usesPattern:boolean[]) {
+function constructBodyOfFile(numberOfTracks:number, waveforms:WaveformId[], usesPattern:boolean[]) {
     let file:string[] = [];
     file.push("// Get track lengths\n");
     for (let i = 0; i < numberOfTracks; i++) {
         file.push("tracklen" + i + " = strlen(track" + i + ");\n");
     }
+    file.push("tracklentempo = strlen(temposeq);\n");
     file.push("\n");
     file.push("void main()\n");
     file.push("{\n");
-    file.push("    tempo(" + tempo + ")\n");
-    file.push("\n");
     file = file.concat(constructLoopBlocks(numberOfTracks, usesPattern));
     file.push("    // Repeat\n");
     file.push("jmp main;\n");
@@ -150,6 +185,12 @@ function constructBodyOfFile(numberOfTracks:number, tempo:number, waveforms:Wave
             file.push("float note" + i + ", idx" + i + ", remain" + i + ", tracklen" + i + ";\n");
         }
     }
+    if (usesPattern[numberOfTracks]) {
+        file.push("float curtempo, idxtempo, remaintempo, tracklentempo"
+            + ", patternlentempo, patternstarttempo, patternpostempo;\n");
+    } else {
+        file.push("float curtempo, idxtempo, remaintempo, tracklentempo;\n");
+    }
     file.push("float time, timestamp;\n");
     file.push("\n");
     for (let i = 0; i < waveforms.length; i++) {
@@ -158,9 +199,10 @@ function constructBodyOfFile(numberOfTracks:number, tempo:number, waveforms:Wave
     file.push("\n");
     return file;
 }
-function createFileString(dblinesin:string[][], usesPattern:boolean[], tempo:number, waveforms:WaveformId[], volumes:number[]) {
+function createFileString(dblinesin:string[][], usesPattern:boolean[], waveforms:WaveformId[], volumes:number[]) {
     let file = createWaveChannelBlocks(volumes);
-    file = file.concat(constructBodyOfFile(dblinesin.length, tempo, waveforms, usesPattern));
+    let numberOfTracks = dblinesin.length - 1; // last entry is always the tempo pseudo-track
+    file = file.concat(constructBodyOfFile(numberOfTracks, waveforms, usesPattern));
     for (let dbline of dblinesin) {
         file = file.concat(dbline);
         file.push("\n");
@@ -170,3 +212,4 @@ function createFileString(dblinesin:string[][], usesPattern:boolean[], tempo:num
 }
 
 export {createDbLines as CreateDBLines, createFileString as CreateFileString};
+export type {NamedTrack};

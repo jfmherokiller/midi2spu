@@ -11,20 +11,72 @@ const STEPS_PER_BEAT = 10;
 /* MIDI default tempo (spec fallback when no setTempo meta event is present) */
 const DEFAULT_MICROSECONDS_PER_BEAT = 500000;
 
-function getTempo(midi: Midifile) {
+/* Default scaled-BPM (spec fallback of 120 BPM, matching DEFAULT_MICROSECONDS_PER_BEAT) used
+   whenever no setTempo event is in effect yet - both as the very first value in a track with no
+   tempo events at all, and to seed getTempoTrack's walk before the first real change. */
+const DEFAULT_SCALED_BPM = Math.round(60000000 / DEFAULT_MICROSECONDS_PER_BEAT) * STEPS_PER_BEAT;
+
+/* One scaled-BPM value per output step, the same per-step-array-then-hold-until-next-change shape
+   as getnotes()'s note tracks - reused as-is by scriptGen.ts (encoded/decoded exactly like a note
+   track, just driving `tempo(curtempo)` instead of `chpitch`, see constructLoopBlocks) and by
+   player.ts (to build a real-time cumulative-time lookup for variable-tempo playback). Always
+   exactly `totalSteps` long (the caller's longest note track length) - anything past the last
+   real tempo-change event holds that value, so the tempo curve and every note track index
+   together without a separate padding step.
+
+   setTempo events are scanned across *every* track chunk, not just track 0 - spec allows them
+   anywhere, though convention puts them in track 0 - merged by absolute tick across tracks (there
+   usually aren't more than a handful in a real file, so this doesn't need getnotes()'s more
+   elaborate per-(track,channel) grouping machinery). SMPTE-divided files skip all of this: no
+   beat/tempo concept applies to them at all (see getTempo... now folded in here - a fixed
+   real-time clock instead), so any setTempo events present (spec doesn't forbid them, but they're
+   meaningless for a real-time-clocked file) are ignored and every step gets the same fixed
+   effective tempo, chosen so the generated script's tempo() busy-wait (60/bpm seconds) exactly
+   equals one SMPTE-quantized step (1/SMPTE_STEPS_PER_SECOND seconds). */
+function getTempoTrack(midi: Midifile, totalSteps: number): number[] {
     if (midi.header.division.type === "smpte") {
-        /* SMPTE-timed files have no beat/tempo concept - a fixed real-time clock instead - so any
-           setTempo events present (spec doesn't forbid them, but they're meaningless here) are
-           ignored, and this returns a fixed effective tempo instead: chosen so tempo()'s per-tick
-           busy-wait (60/bpm seconds) exactly equals one SMPTE-quantized step
-           (1/SMPTE_STEPS_PER_SECOND seconds). */
-        return 60 * SMPTE_STEPS_PER_SECOND;
+        return new Array(totalSteps).fill(60 * SMPTE_STEPS_PER_SECOND);
     }
-    let tempoEvent = midi.tracks[0].filter(x => x.microsecondsPerBeat != null)[0];
-    let microsecondsPerBeat = tempoEvent?.microsecondsPerBeat ?? DEFAULT_MICROSECONDS_PER_BEAT;
-    let tempo = 60000000 / microsecondsPerBeat;
-    tempo = Math.round(tempo);
-    return tempo * STEPS_PER_BEAT;
+
+    interface TempoChange {
+        absoluteTick: number;
+        scaledBpm: number;
+    }
+    let changes: TempoChange[] = [];
+    for (let track of midi.tracks) {
+        let absoluteTick = 0;
+        for (let midievent of track) {
+            absoluteTick += midievent.deltaTime;
+            if (midievent.microsecondsPerBeat != null) {
+                let bpm = Math.round(60000000 / midievent.microsecondsPerBeat);
+                changes.push({absoluteTick, scaledBpm: bpm * STEPS_PER_BEAT});
+            }
+        }
+    }
+    changes.sort((a, b) => a.absoluteTick - b.absoluteTick);
+
+    let tempoTrack: number[] = [];
+    let currentScaledBpm = DEFAULT_SCALED_BPM;
+    let fractionalSteps = 0;
+    let lastTick = 0;
+    for (let {absoluteTick, scaledBpm} of changes) {
+        if (tempoTrack.length >= totalSteps) break;
+        let deltaTicks = absoluteTick - lastTick;
+        lastTick = absoluteTick;
+        if (deltaTicks > 0) {
+            fractionalSteps += ticksToStepsFloat(midi.header.division, STEPS_PER_BEAT, deltaTicks);
+            let steps = Math.floor(fractionalSteps);
+            fractionalSteps -= steps;
+            for (let s = 0; s < steps && tempoTrack.length < totalSteps; s++) {
+                tempoTrack.push(currentScaledBpm);
+            }
+        }
+        currentScaledBpm = scaledBpm;
+    }
+    while (tempoTrack.length < totalSteps) {
+        tempoTrack.push(currentScaledBpm);
+    }
+    return tempoTrack;
 }
 
 /* A MIDI *track chunk* and a MIDI *channel* are not the same thing, and getnotes() used to
@@ -43,8 +95,6 @@ function getTempo(midi: Midifile) {
    separate regardless of what channel number it happens to share with another track. For the
    common case (one channel per track, true of most files this project was tested against before
    these two), this produces the same grouping as before. */
-/* MIDI channels 0-15; a real GM controller number. Controller 64 is handled by the sustain-pedal
-   logic in the per-group walk below, not filtered out here. */
 const CC_ALL_SOUND_OFF = 120;
 const CC_ALL_NOTES_OFF = 123;
 const CC_SUSTAIN = 64;
@@ -168,4 +218,4 @@ function getnotes(midi: Midifile) {
     return {tracks: notes, isPercussion};
 }
 
-export {getnotes, getTempo};
+export {getnotes, getTempoTrack};
