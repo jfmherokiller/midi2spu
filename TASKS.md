@@ -88,11 +88,15 @@ the repo). Checked off as each phase is implemented **and** verified, not just i
       `midiExtract.ts`, `scriptGen.ts` (commit `8b8c257`). Verified byte-identical full generated
       output (not just size) on all 9 files now in the regression set. `midiTiming.ts` deferred to
       when Phase C (SMPTE) actually needs it, per the plan.
-- [ ] **Phase B** — robustness (`MidiFile.ts`: skip unknown chunks, handle system-common bytes
-      0xF1-0xF6, reset running status after 0xF0+ events) + `getnotes()` held-note-stack fix
-      (overlapping/legato notes) + All Notes Off/All Sound Off (CC 120/123).
-- [ ] **Phase E** — sustain pedal (CC64), extends the held-note stack from Phase B. Real test file:
-      `A-Team.mid` (12 real CC64 events, confirmed).
+- [x] **Phase B** — robustness (`MidiFile.ts`: skip unknown chunks, handle system-common bytes
+      0xF1-0xF6, reset running status after 0xF0+ events, tolerate malformed meta-event lengths)
+      + `getnotes()` held-note-stack fix (overlapping/legato notes) + All Notes Off/All Sound Off
+      (CC 120/123). Commits `a92e471` (fix), `29846c7` (docs). Also fixed a real crash on 2 files
+      (malformed `timeSignature` length) discovered along the way, not originally scoped but same
+      "don't crash on a real file" spirit.
+- [x] **Phase E** — sustain pedal (CC64), implemented together with Phase B since it shares the
+      exact same held-note-stack rewrite (same commits as above). Real test file: `A-Team.mid`
+      (12 real CC64 events, confirmed).
 - [ ] **Phase C — SMPTE** — real time-division support (`MidiHeader.division` discriminated union,
       `midiTiming.ts`'s `ticksToStepsFloat`, `STEPS_PER_SECOND=20`). No real SMPTE file found yet
       in the checked subset — may need a hand-built synthetic fixture.
